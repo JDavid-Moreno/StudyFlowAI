@@ -1,0 +1,27 @@
+{
+  "entradas": [
+    "x_dias",
+    "x_prioridad",
+    "x_dificultad",
+    "x_horas",
+    "x_ventana",
+    "x_carga"
+  ],
+  "dias": [
+    3,
+    30
+  ],
+  "horas": [
+    1.0,
+    20.0
+  ],
+  "ventana": [
+    6.0,
+    240.0
+  ],
+  "nivel": {
+    "baja": -1.0,
+    "media": 0.0,
+    "alta": 1.0
+  }
+}

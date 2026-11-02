@@ -50,6 +50,9 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 ├── data/
 │   ├── dataset_studyflow.csv       Dataset v1 (secciones 2.1 a 2.5 del notebook)
 │   └── dataset_studyflow_v2.csv    Dataset v2, el final: con este se entrena la red
+├── modelos/
+│   ├── studyflow_mlp.keras         Red entrenada (la genera el paso 6 del notebook)
+│   └── escalado.json               Rangos de escalado de las entradas, deben usarse junto con la red
 ├── generar_dataset.py              Generador de la v1
 ├── generar_dataset_v2.py           Generador de la v2
 ├── docs/                           Documentación
@@ -68,7 +71,7 @@ uv sync
 uv run jupyter lab
 ```
 
-Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Se entrenan varias redes (comparación de pesos y semillas), así que la ejecución completa tarda unos minutos en CPU. Los datasets ya están incluidos en `data/`.
+Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Al final (paso 6) se guarda la red entrenada en `modelos/`; el resto del sistema solo la carga, nunca entrena. Se entrenan varias redes (comparación de pesos y semillas), así que la ejecución completa tarda unos minutos en CPU. Los datasets ya están incluidos en `data/`.
 
 Para regenerar los datasets (son deterministas, `SEED = 42`):
 
