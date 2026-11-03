@@ -12,4 +12,7 @@ dependencies = [
     "ipykernel>=6.29",
     "jupyterlab>=4.2",
     "tensorflow>=2.21.0",
+    "openai>=3.42",
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
 ]
