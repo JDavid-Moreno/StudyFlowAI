@@ -14,14 +14,16 @@ El LLM aparece en dos puntos (entender el mensaje y contar el horario) y en ning
 
 | Componente                  | Qué hace                                                                                                  | Estado                                      |
 |-----------------------------|-----------------------------------------------------------------------------------------------------------|---------------------------------------------|
-| LLM intérprete              | Convierte el mensaje del estudiante en una orden de un menú cerrado de 9 acciones                         | **Hecho** en notebook (probado con OpenAI)  |
-| Validador                   | Revisa la forma de los datos (Pydantic) y que las horas quepan antes de cada fecha límite                 | **Hecho** en notebook                       |
-| **MLP**                     | Una red, dos salidas: prioridad de cada actividad y reparto del trabajo en inicio, medio y final          | **Hecho**, entrenado y guardado en `modelos/` |
-| Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** en notebook                       |
-| Validador de salida + LLM redactor | Redacta el horario en lenguaje natural y comprueba que el texto no invente nada                    | **Hecho** en notebook (probado con OpenAI)  |
+| LLM intérprete              | Convierte el mensaje del estudiante en una orden de un menú cerrado de 9 acciones                         | **Hecho** (`studyflow/`, probado con OpenAI) |
+| Validador                   | Revisa la forma de los datos (Pydantic) y que las horas quepan antes de cada fecha límite                 | **Hecho** (`studyflow/`)                    |
+| **MLP**                     | Una red, dos salidas: prioridad de cada actividad y reparto del trabajo en inicio, medio y final          | **Hecho**, entrenado en `modelos/`; se usa desde `studyflow/mlp.py` |
+| Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** (`studyflow/`)                    |
+| Validador de salida + LLM redactor | Redacta el horario en lenguaje natural y comprueba que el texto no invente nada                    | **Hecho** (`studyflow/`, probado con OpenAI) |
 | Interfaz                    | Página web sin login (prototipo en Figma)                                                                 | Prototipo aparte; el front irá en TypeScript |
 
-Cada capa se desarrolla y se prueba por completo en su propio notebook. Falta mudar el código a archivos `.py`, un notebook que pruebe el flujo completo, la persistencia (SQLite), una API (FastAPI) y el front.
+Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Falta la persistencia (SQLite), una API (FastAPI) y el front.
+
+Los notebooks se conservan a propósito: ahí está la explicación de cada decisión y sirven para experimentar. El código de `studyflow/` es la misma lógica con documentación mínima, así que el código está duplicado entre notebook y `.py`.
 
 ## Las capas
 
@@ -77,9 +79,21 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 
 **Límite:** la red aprende la regla del profesor heurístico, no preferencias reales de estudiantes.
 
+**Uso desde el código (`studyflow/mlp.py`):** `PredictorMLP` carga la red y `escalado.json` y, dado un plan, calcula las 6 entradas de cada actividad con la misma capacidad efectiva del validador (solo cuentan los días con capacidad). Cada valor se recorta al rango con el que se entrenó (3 a 30 días, 1 a 20 h, 6 a 240 h de ventana), así que un plazo más largo se trata como de 30 días. Devuelve una `Prediccion` por actividad para la capa de asignación.
+
 ## Estructura
 
 ```
+├── studyflow/                           Código del sistema (documentación mínima: la explicación está en los notebooks)
+│   ├── models.py                        Modelos Pydantic de entrada
+│   ├── disponibilidad.py                Capacidad efectiva por día
+│   ├── validador.py                     Validador de coherencia (R1 a R7)
+│   ├── asignacion.py                    Modelos y algoritmo de asignación
+│   ├── llm.py                           Cliente de OpenAI y utilidades de texto
+│   ├── interprete.py                    Intérprete de órdenes
+│   ├── redactor.py                      Redactor y validador de salida
+│   └── mlp.py                           Entradas del MLP y predicción con la red guardada
+├── tests/                               Pruebas con pytest (ver «Pruebas»)
 ├── notebooks/
 │   ├── StudyFlow_MLP.ipynb              Datos, decisiones, red y conclusiones
 │   ├── StudyFlow_CapaValidacion.ipynb   Pydantic, capacidad efectiva y validador de coherencia
@@ -99,7 +113,7 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 └── Proyecto PTIA.pdf                    Documento del proyecto
 ```
 
-Cada notebook trae el código de su capa (listo para mudarse a `.py`), las decisiones que se tomaron y sus pruebas. Los notebooks de las capas son independientes entre sí: el código que necesitan de otra capa va copiado al inicio.
+Cada notebook trae el código de su capa, las decisiones que se tomaron y sus pruebas. Los notebooks de las capas son independientes entre sí (el código que necesitan de otra capa va copiado al inicio) y también de `studyflow/`: no lo importan.
 
 La v1 se conserva a propósito: muestra que con la primera regla la regresión lineal ya resolvía el problema, y por eso se creó la v2 (explicado en la sección 2.6 del notebook).
 
@@ -116,9 +130,11 @@ Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Al 
 
 Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion` y `StudyFlow_CapaLLM` también se ejecutan con Run All y no necesitan entrenar nada. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real y se omiten solos si no hay clave.
 
+Las pruebas del código en `studyflow/` se ejecutan con pytest (siguiente sección).
+
 ### Configuración del LLM (opcional)
 
-Solo hace falta para los pasos 5 y 6 del notebook de la capa del LLM.
+Solo hace falta para los pasos 5 y 6 del notebook de la capa del LLM y para las pruebas con el LLM real (ver «Pruebas»).
 
 ```bash
 cp .env.example .env    # y completar OPENAI_API_KEY
@@ -134,7 +150,7 @@ cp .env.example .env    # y completar OPENAI_API_KEY
 | `LLM_PAUSA_SEGUNDOS`       | Pausa entre llamadas en las pruebas reales (por defecto 0)                       |
 | `LLM_TIMEOUT_SEGUNDOS`     | Plazo máximo por llamada (por defecto 90)                                        |
 
-El archivo `.env` está en `.gitignore`: la clave nunca se sube. Las pruebas con el LLM real hacen 17 llamadas y gastan saldo de la cuenta, aunque muy poco.
+El archivo `.env` está en `.gitignore`: la clave nunca se sube. Debe estar en la raíz del proyecto y los comandos se ejecutan desde esa carpeta, porque ahí lo busca el código.
 
 Para regenerar los datasets (son deterministas, `SEED = 42`):
 
@@ -142,6 +158,56 @@ Para regenerar los datasets (son deterministas, `SEED = 42`):
 uv run python generar_dataset_v2.py   # escribe data/dataset_studyflow_v2.csv
 uv run python generar_dataset.py      # escribe dataset_studyflow.csv en la carpeta actual; moverlo a data/
 ```
+
+## Pruebas
+
+Se ejecutan desde la raíz del proyecto, después de `uv sync` (instala el paquete `studyflow` y pytest):
+
+```bash
+uv run pytest                              # las pruebas normales: no usan internet ni gastan saldo
+uv run pytest -v                           # lo mismo, una línea por prueba
+uv run pytest tests/test_flujo.py -v       # solo el flujo completo
+```
+
+El resultado esperado es `168 passed, 18 deselected`. Los 18 «deselected» no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
+
+| Archivo                     | Qué prueba                                                                                           |
+|-----------------------------|------------------------------------------------------------------------------------------------------|
+| `test_models.py`            | Forma de los datos (Pydantic)                                                                        |
+| `test_disponibilidad.py`    | Capacidad efectiva por día                                                                           |
+| `test_validador.py`         | Las reglas de coherencia, con 20 casos                                                               |
+| `test_asignacion.py`        | Funciones auxiliares, 17 casos y 1732 planes aleatorios que no violan ninguna restricción            |
+| `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (casos, puertas de seguridad) y redactor, todo con un LLM simulado |
+| `test_mlp.py`               | Entradas del MLP calculadas a mano y predicciones con la red guardada                                |
+| `test_flujo.py`             | **Flujo completo**: mensaje → intérprete → validador → MLP → asignación → redactor → JSON para el front. Incluye planes inviables que deben detenerse en el validador y 150 planes aleatorios |
+
+### Pruebas con el LLM real (las 18 que no corren por defecto)
+
+Son las que marca `@pytest.mark.llm_real`:
+
+| Prueba                                | Cantidad | Qué comprueba                                                                                 |
+|---------------------------------------|----------|-----------------------------------------------------------------------------------------------|
+| `test_interprete.py::test_llm_real`   | 15       | 15 frases (válidas, ambiguas, bobas y maliciosas). Condición dura: nada ambiguo, tonto o malicioso se vuelve una orden |
+| `test_redactor.py::test_redactor_llm_real` | 2   | El texto del LLM sobre el horario completo y sobre una consulta pasa el validador de salida y no cae en la plantilla |
+| `test_flujo.py::test_flujo_completo_con_llm_real` | 1 | Un mensaje real recorre todo el flujo hasta el JSON final                              |
+
+Para que funcionen:
+
+1. Tener la clave en el `.env` (`cp .env.example .env` y completar `OPENAI_API_KEY`; ver «Configuración del LLM»).
+2. Ejecutar solo esas pruebas con `-m llm_real`:
+
+```bash
+uv run pytest -m llm_real -v -s      # -s muestra los textos que escribe el LLM
+```
+
+Para correr **todo junto** (las 168 normales y las 18 reales): `uv run pytest -m ""`.
+
+Qué tener presente:
+
+- **Sin clave no fallan: se omiten** (`skipped`). Si ves `18 skipped`, falta la clave en el `.env` o el comando no se ejecutó desde la raíz del proyecto.
+- **Gastan saldo, muy poco:** son 19 llamadas (15 + 2 + 2 del flujo, sin contar reintentos). Con `gpt-6-luna` cuestan centavos, pero conviene revisar el saldo antes de una demo.
+- **El LLM no es determinista.** Si una frase falla, no siempre es un error del sistema: puede ser un caso donde el LLM respondió distinto a lo esperado. La condición que sí debe cumplirse siempre es que ningún mensaje ambiguo, tonto o malicioso produzca una orden. Se repite la prueba y se mira el mensaje del fallo (con `-s`) antes de tocar el código.
+- Si el saldo se agota, las llamadas fallan con `insufficient_quota`; el cliente no reintenta en ese caso.
 
 ## Tecnologías
 
