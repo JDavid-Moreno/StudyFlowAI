@@ -19,9 +19,10 @@ El LLM aparece en dos puntos (entender el mensaje y contar el horario) y en ning
 | **MLP**                     | Una red, dos salidas: prioridad de cada actividad y reparto del trabajo en inicio, medio y final          | **Hecho**, entrenado en `modelos/`; se usa desde `studyflow/mlp.py` |
 | Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** (`studyflow/`)                    |
 | Validador de salida + LLM redactor | Redacta el horario en lenguaje natural y comprueba que el texto no invente nada                    | **Hecho** (`studyflow/`, probado con OpenAI) |
+| Persistencia (SQLite)       | Guarda por estudiante su plan, el horario vigente y la orden que espera confirmación; es una capa aparte del flujo | **Hecho** (`studyflow/persistencia.py`) |
 | Interfaz                    | Página web sin login (prototipo en Figma)                                                                 | Prototipo aparte; el front irá en TypeScript |
 
-Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Falta la persistencia (SQLite), una API (FastAPI) y el front.
+Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Falta la capa que aplica cada orden (hoy solo está probada la de mover una sesión, dentro de `test_flujo.py`), una API (FastAPI) y el front.
 
 Los notebooks se conservan a propósito: ahí está la explicación de cada decisión y sirven para experimentar. El código de `studyflow/` es la misma lógica con documentación mínima, así que el código está duplicado entre notebook y `.py`.
 
@@ -53,6 +54,19 @@ Recibe el plan validado y las dos salidas del MLP y devuelve sesiones `(activida
 - **Redactor:** cuenta el horario ya calculado en español. Un validador de salida revisa que fechas, horas, duraciones y actividades coincidan con el horario real; si el texto inventa algo, se usa una plantilla de respaldo.
 - **Proveedor:** OpenAI, modelo `gpt-6-luna`. El cliente (`llamar_llm`) reintenta ante fallas pasajeras y no reintenta si se acabó el saldo.
 - **Pruebas:** con un LLM simulado (sin internet) se cubren las 9 acciones, los mensajes vacíos o malformados y las inyecciones. Con el LLM real, 15 de 15 frases interpretadas como se esperaba y los 2 textos del redactor aprobados por el validador de salida.
+
+### Persistencia (`StudyFlow_Persistencia.ipynb`)
+
+Es una capa **aparte del flujo**: ninguna capa la importa. La API lee de la base antes de llamar al flujo y guarda el resultado después. Usa `sqlite3` de la librería estándar, sin ORM y sin dependencias nuevas.
+
+- **Qué guarda:** el estudiante (con un identificador anónimo, porque la página no tiene login), su plan vigente (actividades, franjas de disponibilidad, duración de sesión, máximo diario), el horario vigente con la prioridad del MLP y la orden que espera confirmación. No guarda el texto del chat.
+- **Siete tablas:** `estudiantes`, `planes`, `actividades`, `franjas`, `sesiones`, `resumen` y `orden_pendiente`. Con `ON DELETE CASCADE`, al borrar un plan se borra todo lo suyo.
+- **Guardar es reemplazar, en una sola transacción:** se guarda todo o nada. Si un cambio deja el plan inviable no se guarda y el estudiante conserva el que tenía. Crear un plan nuevo con el mismo identificador reemplaza al anterior.
+- **Al cargar, todo vuelve a pasar por Pydantic**, y los `CHECK` del esquema son una segunda barrera para los valores básicos.
+- **Orden pendiente:** una por estudiante (la nueva reemplaza a la anterior) y vence a los 30 minutos, para no aplicar fechas que el intérprete resolvió otro día.
+- **Pruebas:** 20, con una base en memoria. Cubren el esquema, guardar y cargar, el reemplazo, que un fallo a mitad de camino conserve el plan anterior, que los estudiantes no se mezclen, las órdenes pendientes y 874 planes aleatorios que se guardan y se recuperan sin diferencias.
+- **Pendiente:** marcar las sesiones cumplidas o fijadas y decidir si se guarda historial. Ambas dependen de la capa que aplica las órdenes.
+- Las bases `*.db` están en el `.gitignore`: contienen datos de estudiantes y no deben subirse al repositorio.
 
 ## La red neuronal (MLP)
 
@@ -92,13 +106,15 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 │   ├── llm.py                           Cliente de OpenAI y utilidades de texto
 │   ├── interprete.py                    Intérprete de órdenes
 │   ├── redactor.py                      Redactor y validador de salida
+│   ├── persistencia.py                  Base SQLite: estudiantes, plan, horario y orden pendiente
 │   └── mlp.py                           Entradas del MLP y predicción con la red guardada
 ├── tests/                               Pruebas con pytest (ver «Pruebas»)
 ├── notebooks/
 │   ├── StudyFlow_MLP.ipynb              Datos, decisiones, red y conclusiones
 │   ├── StudyFlow_CapaValidacion.ipynb   Pydantic, capacidad efectiva y validador de coherencia
 │   ├── StudyFlow_CapaAsignacion.ipynb   Algoritmo de asignación de sesiones
-│   └── StudyFlow_CapaLLM.ipynb          Intérprete, redactor, validador de salida y pruebas con el LLM real
+│   ├── StudyFlow_CapaLLM.ipynb          Intérprete, redactor, validador de salida y pruebas con el LLM real
+│   └── StudyFlow_Persistencia.ipynb     Esquema SQLite, guardar y cargar el plan, orden pendiente
 ├── data/
 │   ├── dataset_studyflow.csv            Dataset v1 (secciones 2.1 a 2.5 del notebook del MLP)
 │   └── dataset_studyflow_v2.csv         Dataset v2, el final: con este se entrena la red
@@ -128,7 +144,7 @@ uv run jupyter lab
 
 Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Al final (paso 6) se guarda la red entrenada en `modelos/`; el resto del sistema solo la carga, nunca entrena. Se entrenan varias redes (comparación de pesos y semillas), así que la ejecución completa tarda unos minutos en CPU. Los datasets ya están incluidos en `data/`.
 
-Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion` y `StudyFlow_CapaLLM` también se ejecutan con Run All y no necesitan entrenar nada. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real y se omiten solos si no hay clave.
+Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion`, `StudyFlow_CapaLLM` y `StudyFlow_Persistencia` también se ejecutan con Run All y no necesitan entrenar nada. El de persistencia importa el paquete `studyflow/`, así que necesita el entorno del proyecto (`uv sync`) como kernel. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real y se omiten solos si no hay clave.
 
 Las pruebas del código en `studyflow/` se ejecutan con pytest (siguiente sección).
 
@@ -169,7 +185,7 @@ uv run pytest -v                           # lo mismo, una línea por prueba
 uv run pytest tests/test_flujo.py -v       # solo el flujo completo
 ```
 
-El resultado esperado es `169 passed, 19 deselected`. Los 19 «deselected» no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
+El resultado esperado es `189 passed, 19 deselected`. Los 19 «deselected» no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
 
 | Archivo                     | Qué prueba                                                                                           |
 |-----------------------------|------------------------------------------------------------------------------------------------------|
@@ -179,6 +195,7 @@ El resultado esperado es `169 passed, 19 deselected`. Los 19 «deselected» no s
 | `test_asignacion.py`        | Funciones auxiliares, 17 casos y 1732 planes aleatorios que no violan ninguna restricción            |
 | `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (casos, puertas de seguridad) y redactor, todo con un LLM simulado |
 | `test_mlp.py`               | Entradas del MLP calculadas a mano y predicciones con la red guardada                                |
+| `test_persistencia.py`      | Esquema, guardar y cargar el plan, reemplazo, transacción que se deshace si algo falla, órdenes pendientes y 874 planes aleatorios que se guardan y recuperan sin diferencias |
 | `test_flujo.py`             | **Flujo completo**: mensaje → intérprete → validador → MLP → asignación → redactor → JSON para el front. Crear un plan, mover una sesión y replanificar con el MLP (ver abajo), planes inviables que deben detenerse en el validador y 150 planes aleatorios |
 
 ### El flujo completo, paso a paso (`test_flujo.py`)
@@ -234,7 +251,7 @@ Para que funcionen:
 uv run pytest -m llm_real -v -s      # -s muestra los textos que escribe el LLM
 ```
 
-Para correr **todo junto** (las 169 normales y las 19 reales): `uv run pytest -m ""`.
+Para correr **todo junto** (las 189 normales y las 19 reales): `uv run pytest -m ""`.
 
 Qué tener presente:
 
