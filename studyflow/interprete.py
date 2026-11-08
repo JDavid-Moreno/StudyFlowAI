@@ -116,10 +116,10 @@ Llamar = Callable[[str, str, type[BaseModel]], str]
 
 MENSAJES_FUERA = {
     "saludo": "¡Hola! Puedo ayudarte con tu horario de estudio: mover sesiones, bloquear o abrir tiempo, cambiar fechas, horas o dificultad, agregar o quitar actividades, o consultar qué tienes.",
-    "tema_ajeno": "Solo puedo ayudarte con tu horario de estudio. Prueba con algo como «mueve la sesión del jueves al viernes».",
+    "tema_ajeno": "Solo puedo ayudarte con tu horario de estudio. Prueba con algo como: mueve la sesión del jueves al viernes.",
     "codigo": "No puedo ayudar con programación ni código; solo con tu horario de estudio.",
     "instrucciones_internas": "No puedo compartir información interna del sistema. ¿Quieres cambiar o consultar algo de tu horario?",
-    "sin_sentido": "No entendí tu mensaje. Prueba con algo como «bloquea el sábado» o «¿qué tengo mañana?».",
+    "sin_sentido": "No entendí tu mensaje. Prueba con algo como: bloquea el sábado, o ¿qué tengo mañana?",
 }
 
 
@@ -247,7 +247,7 @@ def _frase(problema: str) -> str:
 def _fecha(ref: FechaLLM | None, ctx: Contexto, que: str) -> tuple[date | None, str | None]:
     d = resolver_fecha(ref, ctx.hoy)
     if d is None:
-        return None, f"no logré entender {que}; dime el día de la semana o la fecha, por ejemplo «el jueves» o «5 de noviembre»"
+        return None, f"no logré entender {que}; dime el día de la semana o la fecha, por ejemplo el jueves o 5 de noviembre"
     if d < ctx.hoy:
         return None, f"{que} ({fecha_texto(d)}) ya pasó"
     if d > ctx.hoy + timedelta(days=HORIZONTE_DIAS):
@@ -295,8 +295,8 @@ def _actividad(nombre: str | None, ctx: Contexto, obligatoria: bool) -> tuple[st
     if canon:
         return canon, None
     if candidatos:
-        return None, f"«{_limpio(nombre, 60)}» puede ser: {', '.join(candidatos)}. ¿Cuál quieres?"
-    return None, f"No encontré «{_limpio(nombre, 60)}» en tu plan. " + _lista(ctx)
+        return None, f"{_limpio(nombre, 60)} puede ser: {', '.join(candidatos)}. ¿Cuál quieres?"
+    return None, f"No encontré {_limpio(nombre, 60)} en tu plan. " + _lista(ctx)
 
 
 def _lista(ctx: Contexto) -> str:
@@ -335,10 +335,10 @@ def _resolver_actividades(o: OrdenLLM, ctx: Contexto) -> Respuesta:
         if p:
             problemas.append(p)
         if problemas:
-            return Aclaracion(mensaje=f"Sobre {'«' + nombre[:60] + '»' if nombre else 'una actividad'}: " + "; ".join(problemas) + ".")
+            return Aclaracion(mensaje=f"Sobre {nombre[:60] if nombre else 'una actividad'}: " + "; ".join(problemas) + ".")
         nuevas.append(Actividad(nombre=nombre, horas_estimadas=a.horas, fecha_limite=fecha,
                                 prioridad=a.prioridad or "media", dificultad=a.dificultad or "media"))
-    detalle = ", ".join(f"«{a.nombre}» ({_horas(a.horas_estimadas)}, vence el {fecha_texto(a.fecha_limite)}, "
+    detalle = ", ".join(f"{a.nombre} ({_horas(a.horas_estimadas)}, vence el {fecha_texto(a.fecha_limite)}, "
                         f"prioridad {a.prioridad.value}, dificultad {a.dificultad.value})" for a in nuevas)
     verbo = "crear un plan con" if o.accion == "crear_plan" else "agregar"
     return _orden(Orden(accion=o.accion, actividades=nuevas), f"{verbo} {detalle}")
@@ -392,7 +392,7 @@ def _resolver_decision(o: OrdenLLM, ctx: Contexto) -> Respuesta:
         return _orden(orden, "cancelar el cambio pendiente y dejar tu horario como está", confirmar=False)
     if o.opcion == "abrir_tiempo":
         return _orden(orden, "abrir más tiempo para que todo quepa", confirmar=False)
-    intactas = ("manteniendo intactas " + ", ".join(f"«{p}»" for p in protegidas)) if protegidas else "sin proteger ninguna actividad"
+    intactas = ("manteniendo intactas " + ", ".join(protegidas)) if protegidas else "sin proteger ninguna actividad"
     return _orden(orden, f"recortar horas de las demás actividades, {intactas}")
 
 
@@ -409,23 +409,23 @@ def resolver(o: OrdenLLM, ctx: Contexto) -> Respuesta:
         if err:
             return Aclaracion(mensaje=err)
         if o.accion == "quitar_actividad":
-            return _orden(Orden(accion=o.accion, actividad=nombre), f"quitar la actividad «{nombre}» y replanificar")
+            return _orden(Orden(accion=o.accion, actividad=nombre), f"quitar la actividad {nombre} y replanificar")
         if o.accion == "cambiar_fecha_limite":
             fecha, p = _fecha(o.fecha, ctx, "la nueva fecha límite")
             if p:
                 return Aclaracion(mensaje=_frase(p))
             return _orden(Orden(accion=o.accion, actividad=nombre, dia=fecha),
-                          f"cambiar la fecha límite de «{nombre}» al {fecha_texto(fecha)}")
+                          f"cambiar la fecha límite de {nombre} al {fecha_texto(fecha)}")
         if o.accion == "cambiar_nivel":
             if not (o.prioridad or o.dificultad):
-                return Aclaracion(mensaje=f"¿Quieres cambiar la prioridad o la dificultad de «{nombre}»? Dime el nivel: baja, media o alta.")
+                return Aclaracion(mensaje=f"¿Quieres cambiar la prioridad o la dificultad de {nombre}? Dime el nivel: baja, media o alta.")
             cambios = [f"{campo} {valor}" for campo, valor in (("prioridad", o.prioridad), ("dificultad", o.dificultad)) if valor]
             return _orden(Orden(accion=o.accion, actividad=nombre, prioridad=o.prioridad, dificultad=o.dificultad),
-                          f"cambiar «{nombre}» a " + " y ".join(cambios))
+                          f"cambiar {nombre} a " + " y ".join(cambios))
         if o.horas is None or not 0 < o.horas <= 100:
-            return Aclaracion(mensaje=f"Dime cuántas horas en total necesitas para «{nombre}» (más de 0 y hasta 100).")
+            return Aclaracion(mensaje=f"Dime cuántas horas en total necesitas para {nombre} (más de 0 y hasta 100).")
         return _orden(Orden(accion=o.accion, actividad=nombre, horas=o.horas),
-                      f"cambiar las horas estimadas de «{nombre}» a {_horas(o.horas)}")
+                      f"cambiar las horas estimadas de {nombre} a {_horas(o.horas)}")
 
     if o.accion in ("bloquear_dia", "abrir_tiempo"):
         abrir = o.accion == "abrir_tiempo"
@@ -454,7 +454,7 @@ def resolver(o: OrdenLLM, ctx: Contexto) -> Respuesta:
             return Aclaracion(mensaje=err)
         if origen == destino and hora is None:
             return Aclaracion(mensaje="El día de origen y el de destino son el mismo; dime a qué hora o a qué otro día moverlo.")
-        que = f"las sesiones de «{nombre}»" if nombre else "todas las sesiones"
+        que = f"las sesiones de {nombre}" if nombre else "todas las sesiones"
         a_la = f", empezando a las {hora:%H:%M}" if hora else ""
         return _orden(Orden(accion=o.accion, actividad=nombre, dia_origen=origen, dia_destino=destino, hora_inicio=hora),
                       f"mover {que} del {fecha_texto(origen)} al {fecha_texto(destino)}{a_la}")
@@ -473,7 +473,7 @@ def resolver(o: OrdenLLM, ctx: Contexto) -> Respuesta:
     nombre, err = _actividad(o.actividad, ctx, obligatoria=False)
     if err:
         return Aclaracion(mensaje=err)
-    partes = ([f"del {fecha_texto(dia)}"] if dia else []) + ([f"de «{nombre}»"] if nombre else [])
+    partes = ([f"del {fecha_texto(dia)}"] if dia else []) + ([f"de {nombre}"] if nombre else [])
     return _orden(Orden(accion=o.accion, dia=dia, actividad=nombre), "consultar tu horario " + " ".join(partes) if partes else "consultar tu horario", confirmar=False)
 
 
@@ -497,5 +497,5 @@ def interpretar(mensaje: str, ctx: Contexto, llamar: Llamar) -> Respuesta:
             raise ValueError("campos que no existen en el esquema")
         orden = OrdenLLM.model_validate(datos)
     except (ValueError, TypeError, ValidationError):
-        return Rechazada(razon="respuesta_invalida", mensaje="No logré entender tu mensaje. Prueba con algo como «mueve la sesión del jueves al viernes».")
+        return Rechazada(razon="respuesta_invalida", mensaje="No logré entender tu mensaje. Prueba con algo como: mueve la sesión del jueves al viernes.")
     return resolver(orden, ctx)

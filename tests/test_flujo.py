@@ -89,7 +89,7 @@ def test_texto_del_llm_fiel_llega_al_front(mlp):
 
 def test_texto_inventado_del_llm_no_llega_al_front(mlp):
     _, plan, _ = crear(mlp)
-    salida = planificar(plan, HOY, mlp, LLMSimulado({"mensaje": "Tienes «Cálculo» el domingo 8 de noviembre a las 23:00."}))
+    salida = planificar(plan, HOY, mlp, LLMSimulado({"mensaje": 'Tienes "Cálculo" el domingo 8 de noviembre a las 23:00.'}))
     assert salida["mensaje"]["origen"] == "plantilla" and salida["mensaje"]["problemas"]
 
 
