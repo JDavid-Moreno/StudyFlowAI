@@ -187,7 +187,7 @@ uv run pytest -v                           # lo mismo, una línea por prueba
 uv run pytest tests/test_flujo.py -v       # solo el flujo completo
 ```
 
-El resultado esperado es `189 passed, 19 deselected`. Los 19 «deselected» no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
+El resultado esperado es `223 passed, 28 deselected`. Los 28 «deselected» no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
 
 | Archivo                     | Qué prueba                                                                                           |
 |-----------------------------|------------------------------------------------------------------------------------------------------|
@@ -195,7 +195,7 @@ El resultado esperado es `189 passed, 19 deselected`. Los 19 «deselected» no s
 | `test_disponibilidad.py`    | Capacidad efectiva por día                                                                           |
 | `test_validador.py`         | Las reglas de coherencia, con 20 casos                                                               |
 | `test_asignacion.py`        | Funciones auxiliares, 17 casos y 1732 planes aleatorios que no violan ninguna restricción            |
-| `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (casos, puertas de seguridad) y redactor, todo con un LLM simulado |
+| `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (34 casos que cubren las 13 acciones, rangos de varios días, decisiones pendientes y puertas de seguridad) y redactor, todo con un LLM simulado |
 | `test_mlp.py`               | Entradas del MLP calculadas a mano y predicciones con la red guardada                                |
 | `test_persistencia.py`      | Esquema, guardar y cargar el plan, reemplazo, transacción que se deshace si algo falla, órdenes pendientes y 874 planes aleatorios que se guardan y recuperan sin diferencias |
 | `test_flujo.py`             | **Flujo completo**: mensaje → intérprete → validador → MLP → asignación → redactor → JSON para el front. Crear un plan, mover una sesión y replanificar con el MLP (ver abajo), planes inviables que deben detenerse en el validador y 150 planes aleatorios |
@@ -233,13 +233,13 @@ Qué tener presente:
 - El validador revisa las horas restantes sin contar lo ya fijado en el destino. Con datos normales no afecta, pero en un plan muy apretado podría decir «factible» y que la asignación quede parcial.
 - Hay una versión con el LLM real (`test_mover_una_sesion_con_llm_real`, ver la tabla de abajo). Usa fechas relativas a hoy en lugar de las fijas, y comprueba lo mismo, pero la orden la interpreta el LLM de verdad.
 
-### Pruebas con el LLM real (las 19 que no corren por defecto)
+### Pruebas con el LLM real (las 28 que no corren por defecto)
 
 Son las que marca `@pytest.mark.llm_real`:
 
 | Prueba                                | Cantidad | Qué comprueba                                                                                 |
 |---------------------------------------|----------|-----------------------------------------------------------------------------------------------|
-| `test_interprete.py::test_llm_real`   | 15       | 15 frases (válidas, ambiguas, bobas y maliciosas). Condición dura: nada ambiguo, tonto o malicioso se vuelve una orden |
+| `test_interprete.py::test_llm_real`   | 24       | 24 frases (válidas, ambiguas, bobas y maliciosas; algunas con una decisión pendiente en el contexto). Condición dura: nada ambiguo, tonto o malicioso se vuelve una orden |
 | `test_redactor.py::test_redactor_llm_real` | 2   | El texto del LLM sobre el horario completo y sobre una consulta pasa el validador de salida y no cae en la plantilla |
 | `test_flujo.py::test_flujo_completo_con_llm_real` | 1 | Un mensaje real recorre todo el flujo hasta el JSON final                              |
 | `test_flujo.py::test_mover_una_sesion_con_llm_real` | 1 | Crea un plan, el LLM real interpreta «no me gustó esta sesión, pásala al sábado a las 9» y el horario se recalcula con el MLP |
@@ -253,12 +253,12 @@ Para que funcionen:
 uv run pytest -m llm_real -v -s      # -s muestra los textos que escribe el LLM
 ```
 
-Para correr **todo junto** (las 189 normales y las 19 reales): `uv run pytest -m ""`.
+Para correr **todo junto** (las 223 normales y las 28 reales): `uv run pytest -m ""`.
 
 Qué tener presente:
 
-- **Sin clave no fallan: se omiten** (`skipped`). Si ves `19 skipped`, falta la clave en el `.env` o el comando no se ejecutó desde la raíz del proyecto.
-- **Gastan saldo, muy poco:** son 22 llamadas (15 + 2 + 2 del flujo + 3 de mover una sesión, sin contar reintentos). Con `gpt-6-luna` cuestan centavos, pero conviene revisar el saldo antes de una demo.
+- **Sin clave no fallan: se omiten** (`skipped`). Si ves `28 skipped`, falta la clave en el `.env` o el comando no se ejecutó desde la raíz del proyecto.
+- **Gastan saldo, muy poco:** son 31 llamadas (24 + 2 + 2 del flujo + 3 de mover una sesión, sin contar reintentos). Con `gpt-6-luna` cuestan centavos, pero conviene revisar el saldo antes de una demo.
 - **El LLM no es determinista.** Si una frase falla, no siempre es un error del sistema: puede ser un caso donde el LLM respondió distinto a lo esperado. La condición que sí debe cumplirse siempre es que ningún mensaje ambiguo, tonto o malicioso produzca una orden. Se repite la prueba y se mira el mensaje del fallo (con `-s`) antes de tocar el código.
 - Si el saldo se agota, las llamadas fallan con `insufficient_quota`; el cliente no reintenta en ese caso.
 
