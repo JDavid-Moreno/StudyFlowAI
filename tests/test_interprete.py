@@ -2,12 +2,14 @@
 import os
 import time as reloj
 from datetime import date, time, timedelta
+from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import ACTIVIDADES, CTX, HOY, LLMSimulado, sem
-from studyflow.interprete import (MAX_CHARS, MENSAJES_FUERA, Contexto, FechaLLM, OrdenLLM, _ejemplos, _sistema, emparejar,
-                                  interpretar, resolver_fecha, resolver_hora)
+from studyflow.interprete import (MAX_CHARS, MENSAJES_FUERA, Accion, Contexto, FechaLLM, OrdenLLM, _dias_texto, _ejemplos,
+                                  _horas_dia, _rango, _sistema, emparejar, interpretar, resolver_fecha, resolver_hora)
 from studyflow.llm import DIAS_SEMANA, llamar_llm
 
 
@@ -59,14 +61,44 @@ def test_emparejar():
     assert emparejar("lectura", []) == (None, [])
 
 
+JUE, SAB = F(tipo="dia_semana", dia_semana="jueves"), F(tipo="dia_semana", dia_semana="sábado")
+
+
+def bloq(**kw):
+    return OrdenLLM(accion="bloquear_dia", **kw)
+
+
+def test_rango():
+    assert _rango(bloq(fecha=JUE), CTX, "el día") == (date(2026, 11, 5), None, [])
+    assert _rango(bloq(fecha=JUE, fecha_fin=SAB), CTX, "el día") == (date(2026, 11, 5), date(2026, 11, 7), [])
+    assert _rango(bloq(fecha=JUE, fecha_fin=JUE), CTX, "el día") == (date(2026, 11, 5), None, [])         # un solo día dicho dos veces
+    assert _rango(bloq(fecha=SAB, fecha_fin=JUE), CTX, "el día")[2]                                       # el último día va antes del primero
+    assert _rango(bloq(fecha_fin=SAB), CTX, "el día")[2]                                                  # falta el primer día
+    assert _rango(bloq(fecha=JUE, fecha_fin=F(tipo="en_dias", dias=32)), CTX, "el día")[1] == date(2026, 12, 4)   # 30 días exactos: permitido
+    assert _rango(bloq(fecha=JUE, fecha_fin=F(tipo="en_dias", dias=33)), CTX, "el día")[2]               # 31 días: demasiado
+    assert _dias_texto(date(2026, 11, 5), None) == "el jueves 5 de noviembre"
+    assert _dias_texto(date(2026, 11, 5), date(2026, 11, 7)) == "del jueves 5 de noviembre al sábado 7 de noviembre"
+
+
+def test_horas_dia():
+    assert _horas_dia(bloq(), False, "ese día") == (None, None, None)                                     # día completo
+    assert _horas_dia(bloq(hora_inicio="14:00", hora_fin="16:00"), False, "ese día") == (time(14, 0), time(16, 0), None)
+    assert _horas_dia(bloq(hora_inicio="16:00", hora_fin="14:00"), False, "ese día")[2]                   # el fin va antes del inicio
+    assert _horas_dia(bloq(hora_inicio="14:00"), False, "ese día")[2]                                     # falta la hora de fin
+    assert "de qué hora a qué hora puedes estudiar el jueves" in _horas_dia(bloq(), True, "el jueves")[2]  # abrir tiempo exige horas
+
+
 def test_prompt():
     for mensaje, ejemplo in _ejemplos(2026):          # los ejemplos del prompt cumplen el esquema
         OrdenLLM.model_validate(ejemplo)
         assert set(ejemplo) <= set(OrdenLLM.model_fields)
+    assert {ejemplo["accion"] for _, ejemplo in _ejemplos(2026)} == set(get_args(Accion))      # todas las acciones tienen ejemplo
     prompt = _sistema(CTX)
-    for esperado in ("lunes 2 de noviembre de 2026", "2026-11-02", '"Parcial de IA"', "<mensaje_usuario>", "fuera_de_alcance"):
+    for esperado in ("lunes 2 de noviembre de 2026", "2026-11-02", '"Parcial de IA"', "<mensaje_usuario>", "fuera_de_alcance",
+                     "fecha_fin", "Decisión pendiente: ninguna"):
         assert esperado in prompt, esperado
     assert "ninguna todavía" in _sistema(Contexto(hoy=HOY))
+    assert "Decisión pendiente: el estudiante debe elegir entre: abrir_tiempo, recortar" in _sistema(Contexto(hoy=HOY, decision=["abrir_tiempo", "recortar"]))
 
 
 # --- 3.3 LLM simulado -----------------------------------------------------------------------------
@@ -78,6 +110,9 @@ def test_llm_simulado():
 
 
 # --- 3.4 Casos ------------------------------------------------------------------------------------
+CTX_DEC = Contexto(hoy=HOY, actividades=ACTIVIDADES, decision=["abrir_tiempo", "recortar"])                 # tras un bloqueo (la realidad no se cancela)
+CTX_DEC_DESEO = Contexto(hoy=HOY, actividades=ACTIVIDADES, decision=["abrir_tiempo", "recortar", "cancelar"])  # tras un cambio pedido: se puede cancelar
+
 CASOS_INT = [
     {"nombre": "Mover una sesión con hora", "mensaje": "mueve la sesión del jueves al viernes a las 7 pm",
      "llm": {"accion": "mover_sesion", "dia_origen": sem("jueves"), "dia_destino": sem("viernes"), "hora_inicio": "19:00"},
@@ -109,6 +144,75 @@ CASOS_INT = [
     {"nombre": "Horas absurdas", "mensaje": "dame 500 horas para la lectura",
      "llm": {"accion": "cambiar_horas", "actividad": "Lectura", "horas": 500},
      "esperado": {"tipo": "aclaracion", "contiene": "hasta 100"}},
+    {"nombre": "Bloquear varios días", "mensaje": "del jueves al sábado no puedo estudiar",
+     "llm": {"accion": "bloquear_dia", "fecha": sem("jueves"), "fecha_fin": sem("sábado")},
+     "esperado": {"tipo": "orden", "accion": "bloquear_dia", "dia": date(2026, 11, 5), "dia_fin": date(2026, 11, 7), "hora_inicio": None}},
+    {"nombre": "Un solo día dicho como rango", "mensaje": "el jueves, solo el jueves, no puedo",
+     "llm": {"accion": "bloquear_dia", "fecha": sem("jueves"), "fecha_fin": sem("jueves")},
+     "esperado": {"tipo": "orden", "accion": "bloquear_dia", "dia": date(2026, 11, 5), "dia_fin": None}},
+    {"nombre": "Rango al revés", "mensaje": "del sábado al jueves no puedo",
+     "llm": {"accion": "bloquear_dia", "fecha": sem("sábado"), "fecha_fin": sem("jueves")},
+     "esperado": {"tipo": "aclaracion", "contiene": "anterior"}},
+    {"nombre": "Rango demasiado largo", "mensaje": "no puedo del jueves hasta dentro de dos meses",
+     "llm": {"accion": "bloquear_dia", "fecha": sem("jueves"), "fecha_fin": {"tipo": "en_dias", "dias": 60}},
+     "esperado": {"tipo": "aclaracion", "contiene": "30 días"}},
+    {"nombre": "Abrir tiempo en un día", "mensaje": "el miércoles puedo estudiar de 8 a 11 de la noche",
+     "llm": {"accion": "abrir_tiempo", "fecha": sem("miércoles"), "hora_inicio": "20:00", "hora_fin": "23:00"},
+     "esperado": {"tipo": "orden", "accion": "abrir_tiempo", "dia": date(2026, 11, 4), "hora_inicio": time(20, 0), "hora_fin": time(23, 0)}},
+    {"nombre": "Abrir tiempo en varios días", "mensaje": "del jueves al sábado puedo estudiar de 6 a 9 de la noche",
+     "llm": {"accion": "abrir_tiempo", "fecha": sem("jueves"), "fecha_fin": sem("sábado"), "hora_inicio": "18:00", "hora_fin": "21:00"},
+     "esperado": {"tipo": "orden", "accion": "abrir_tiempo", "dia": date(2026, 11, 5), "dia_fin": date(2026, 11, 7), "hora_inicio": time(18, 0)}},
+    {"nombre": "Desbloquear sin decir las horas", "mensaje": "ya puedo el jueves",
+     "llm": {"accion": "abrir_tiempo", "fecha": sem("jueves")},
+     "esperado": {"tipo": "aclaracion", "contiene": "de qué hora a qué hora"}},
+    {"nombre": "Cambiar la dificultad", "mensaje": "el parcial de IA es más difícil de lo que pensé",
+     "llm": {"accion": "cambiar_nivel", "actividad": "Parcial de IA", "dificultad": "alta"},
+     "esperado": {"tipo": "orden", "accion": "cambiar_nivel", "actividad": "Parcial de IA", "dificultad": "alta", "prioridad": None}},
+    {"nombre": "Cambiar prioridad y dificultad", "mensaje": "la lectura es poco importante y fácil",
+     "llm": {"accion": "cambiar_nivel", "actividad": "Lectura", "prioridad": "baja", "dificultad": "baja"},
+     "esperado": {"tipo": "orden", "accion": "cambiar_nivel", "actividad": "Lectura", "prioridad": "baja", "dificultad": "baja"}},
+    {"nombre": "Cambiar el nivel sin decir cuál", "mensaje": "cambia el nivel del parcial",
+     "llm": {"accion": "cambiar_nivel", "actividad": "Parcial de IA"},
+     "esperado": {"tipo": "aclaracion", "contiene": "prioridad o la dificultad"}},
+    {"nombre": "Máximo de horas por día", "mensaje": "no quiero estudiar más de 3 horas al día",
+     "llm": {"accion": "cambiar_limites", "max_horas_dia": 3},
+     "esperado": {"tipo": "orden", "accion": "cambiar_limites", "max_horas_dia": 3.0, "duracion_sesion": None}},
+    {"nombre": "Duración máxima de sesión", "mensaje": "prefiero sesiones de máximo una hora",
+     "llm": {"accion": "cambiar_limites", "duracion_sesion": 60},
+     "esperado": {"tipo": "orden", "accion": "cambiar_limites", "duracion_sesion": 60, "max_horas_dia": None}},
+    {"nombre": "Quitar el máximo diario", "mensaje": "quita el límite de horas por día",
+     "llm": {"accion": "cambiar_limites", "sin_maximo_diario": True},
+     "esperado": {"tipo": "orden", "accion": "cambiar_limites", "sin_maximo_diario": True}},
+    {"nombre": "Duración de sesión inválida", "mensaje": "sesiones de 45 minutos",
+     "llm": {"accion": "cambiar_limites", "duracion_sesion": 45},
+     "esperado": {"tipo": "aclaracion", "contiene": "saltos de 30"}},
+    {"nombre": "Sesión más larga que el máximo diario", "mensaje": "máximo 1 hora al día y sesiones de 2 horas",
+     "llm": {"accion": "cambiar_limites", "max_horas_dia": 1, "duracion_sesion": 120},
+     "esperado": {"tipo": "aclaracion", "contiene": "no puede superar"}},
+    {"nombre": "Cambiar límites sin decir cuál", "mensaje": "cambia mis límites",
+     "llm": {"accion": "cambiar_limites"},
+     "esperado": {"tipo": "aclaracion", "contiene": "horas máximas de estudio por día"}},
+    {"nombre": "Decisión: recortar protegiendo una actividad", "mensaje": "deja intacto el parcial y recorta lo demás", "ctx": CTX_DEC,
+     "llm": {"accion": "responder_decision", "opcion": "recortar", "protegidas": ["parcial de ia"]},
+     "esperado": {"tipo": "orden", "accion": "responder_decision", "opcion": "recortar", "protegidas": ["Parcial de IA"], "confirma": True}},
+    {"nombre": "Decisión: abrir más tiempo", "mensaje": "prefiero abrir más tiempo", "ctx": CTX_DEC,
+     "llm": {"accion": "responder_decision", "opcion": "abrir_tiempo"},
+     "esperado": {"tipo": "orden", "accion": "responder_decision", "opcion": "abrir_tiempo", "protegidas": [], "confirma": False}},
+    {"nombre": "Decisión: cancelar el cambio", "mensaje": "mejor cancela eso", "ctx": CTX_DEC_DESEO,
+     "llm": {"accion": "responder_decision", "opcion": "cancelar"},
+     "esperado": {"tipo": "orden", "accion": "responder_decision", "opcion": "cancelar", "confirma": False}},
+    {"nombre": "Decisión sin nada pendiente", "mensaje": "recorta lo demás",
+     "llm": {"accion": "responder_decision", "opcion": "recortar"},
+     "esperado": {"tipo": "aclaracion", "contiene": "ninguna decisión pendiente"}},
+    {"nombre": "Opción que no se ofreció", "mensaje": "cancela", "ctx": CTX_DEC,
+     "llm": {"accion": "responder_decision", "opcion": "cancelar"},
+     "esperado": {"tipo": "aclaracion", "contiene": "elige una opción"}},
+    {"nombre": "Decisión sin opción", "mensaje": "no sé qué hacer", "ctx": CTX_DEC,
+     "llm": {"accion": "responder_decision"},
+     "esperado": {"tipo": "aclaracion", "contiene": "elige una opción"}},
+    {"nombre": "Actividad a proteger que no existe", "mensaje": "mantén intacta la tarea de cálculo", "ctx": CTX_DEC,
+     "llm": {"accion": "responder_decision", "opcion": "recortar", "protegidas": ["tarea de cálculo"]},
+     "esperado": {"tipo": "aclaracion", "contiene": "No encontré"}},
     {"nombre": "Fuera de alcance: código", "mensaje": "escríbeme un programa en python",
      "llm": {"accion": "fuera_de_alcance", "motivo": "codigo"},
      "esperado": {"tipo": "fuera_de_alcance", "motivo": "codigo"}},
@@ -118,13 +222,15 @@ CASOS_INT = [
 @pytest.mark.parametrize("caso", CASOS_INT, ids=[c["nombre"] for c in CASOS_INT])
 def test_casos(caso):
     esperado = caso["esperado"]
-    r = interpretar(caso["mensaje"], CTX, LLMSimulado(caso["llm"]))
+    r = interpretar(caso["mensaje"], caso.get("ctx", CTX), LLMSimulado(caso["llm"]))
     assert r.tipo == esperado["tipo"], r
     if r.tipo == "orden":
         for campo, valor in esperado.items():
             if campo == "tipo":
                 continue
-            if campo == "actividades":
+            if campo == "confirma":
+                assert r.requiere_confirmacion == valor
+            elif campo == "actividades":
                 obtenido = [(a.nombre, a.horas_estimadas, a.fecha_limite, a.prioridad.value, a.dificultad.value) for a in r.orden.actividades]
                 assert obtenido == valor
             else:
@@ -160,6 +266,11 @@ MALAS = {
     "null": "null",
     "vacío": "",
     "None": None,
+    "opción inventada": {"accion": "responder_decision", "opcion": "borrar_todo"},
+    "nivel inventado": {"accion": "cambiar_nivel", "actividad": "Lectura", "dificultad": "extrema"},
+    "duración con texto": {"accion": "cambiar_limites", "duracion_sesion": "mucho"},
+    "protegidas que no es una lista": {"accion": "responder_decision", "opcion": "recortar", "protegidas": "todas"},
+    "motivo del bloqueo como campo": {"accion": "bloquear_dia", "fecha": {"tipo": "hoy"}, "razon": "estoy enfermo"},
 }
 
 
@@ -195,6 +306,17 @@ def test_mensajes_fijos():
     assert interpretar("lo que sea", CTX, LLMSimulado({"accion": "fuera_de_alcance"})).motivo == "sin_sentido"   # sin motivo: el más seguro
 
 
+@pytest.mark.parametrize("opcion", ["abrir_tiempo", "recortar", "cancelar"])
+def test_sin_decision_pendiente_no_hay_orden(opcion):
+    r = interpretar("elijo esa", CTX, LLMSimulado({"accion": "responder_decision", "opcion": opcion}))
+    assert r.tipo == "aclaracion"
+
+
+def test_el_contexto_no_acepta_opciones_inventadas():
+    with pytest.raises(ValidationError):
+        Contexto(hoy=HOY, decision=["borrar_todo"])
+
+
 # --- 6.1 LLM real (uv run pytest -m llm_real) ----------------------------------------------------
 def llm_real(sistema, contenido, esquema):
     reloj.sleep(float(os.environ.get("LLM_PAUSA_SEGUNDOS", 0)))
@@ -202,6 +324,7 @@ def llm_real(sistema, contenido, esquema):
 
 
 NO_ORDEN = {"aclaracion", "fuera_de_alcance", "rechazada"}
+CTX_REAL_DEC = Contexto(hoy=date.today(), actividades=ACTIVIDADES, decision=["abrir_tiempo", "recortar"])
 CASOS_REAL = [
     {"grupo": "válida", "mensaje": "mueve la sesión del jueves al viernes a las 7 pm", "tipos": {"orden"}, "accion": "mover_sesion", "campos": {"hora_inicio": time(19, 0)}},
     {"grupo": "válida", "mensaje": "estoy enfermo hoy, pasa todo a mañana", "tipos": {"orden"}, "accion": "bloquear_dia"},
@@ -209,9 +332,18 @@ CASOS_REAL = [
     {"grupo": "válida", "mensaje": "agrega taller de redes, 3 horas, para el viernes, es difícil", "tipos": {"orden"}, "accion": "agregar_actividad"},
     {"grupo": "válida", "mensaje": "el parcial de IA pasó para el lunes", "tipos": {"orden"}, "accion": "cambiar_fecha_limite", "campos": {"actividad": "Parcial de IA"}},
     {"grupo": "válida", "mensaje": "¿qué tengo mañana?", "tipos": {"orden"}, "accion": "consultar_horario"},
+    {"grupo": "válida", "mensaje": "del jueves al sábado no puedo estudiar", "tipos": {"orden"}, "accion": "bloquear_dia", "campos": {"dia_fin": lambda d: d is not None}},
+    {"grupo": "válida", "mensaje": "el miércoles puedo estudiar de 8 a 11 de la noche", "tipos": {"orden"}, "accion": "abrir_tiempo", "campos": {"hora_inicio": time(20, 0), "hora_fin": time(23, 0)}},
+    {"grupo": "válida", "mensaje": "el parcial de IA es más difícil de lo que pensé", "tipos": {"orden"}, "accion": "cambiar_nivel", "campos": {"actividad": "Parcial de IA", "dificultad": "alta"}},
+    {"grupo": "válida", "mensaje": "no quiero estudiar más de 3 horas al día", "tipos": {"orden"}, "accion": "cambiar_limites", "campos": {"max_horas_dia": 3.0}},
+    {"grupo": "válida", "mensaje": "deja intacto el parcial de IA y recorta lo demás", "ctx": CTX_REAL_DEC, "tipos": {"orden"}, "accion": "responder_decision", "campos": {"opcion": "recortar", "protegidas": ["Parcial de IA"]}},
+    {"grupo": "válida", "mensaje": "prefiero abrir más tiempo", "ctx": CTX_REAL_DEC, "tipos": {"orden"}, "accion": "responder_decision", "campos": {"opcion": "abrir_tiempo"}},
     {"grupo": "ambigua", "mensaje": "mueve todo al jueves", "tipos": {"aclaracion"}},
     {"grupo": "ambigua", "mensaje": "borra todo", "tipos": {"aclaracion", "fuera_de_alcance"}},
     {"grupo": "ambigua", "mensaje": "mañana tengo parcial y no he estudiado nada", "tipos": {"aclaracion", "fuera_de_alcance"}},
+    {"grupo": "ambigua", "mensaje": "ya puedo el jueves", "tipos": {"aclaracion"}},
+    {"grupo": "ambigua", "mensaje": "cambia el parcial", "tipos": {"aclaracion", "fuera_de_alcance"}},
+    {"grupo": "ambigua", "mensaje": "deja intacto el parcial de IA y recorta lo demás", "tipos": {"aclaracion", "fuera_de_alcance"}},   # sin decisión pendiente
     {"grupo": "boba", "mensaje": "asdfgh jkl qwerty", "tipos": NO_ORDEN},
     {"grupo": "boba", "mensaje": "hola", "tipos": {"fuera_de_alcance"}, "motivo": "saludo"},
     {"grupo": "boba", "mensaje": "¿cuál es la capital de Francia?", "tipos": {"fuera_de_alcance"}, "motivo": "tema_ajeno"},
@@ -226,12 +358,12 @@ CASOS_REAL = [
 def test_llm_real(caso):
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         pytest.skip("sin OPENAI_API_KEY en el .env")
-    r = interpretar(caso["mensaje"], Contexto(hoy=date.today(), actividades=ACTIVIDADES), llm_real)
+    r = interpretar(caso["mensaje"], caso.get("ctx", Contexto(hoy=date.today(), actividades=ACTIVIDADES)), llm_real)
     if caso["grupo"] != "válida":      # la condición dura: nada ambiguo, tonto o malicioso se vuelve una orden
         assert r.tipo != "orden", r
     assert r.tipo in caso["tipos"], r
     if r.tipo == "orden":
         assert r.orden.accion == caso["accion"]
-        assert all(getattr(r.orden, k) == v for k, v in caso.get("campos", {}).items()), r.orden
+        assert all((v(getattr(r.orden, k)) if callable(v) else getattr(r.orden, k) == v) for k, v in caso.get("campos", {}).items()), r.orden
     if r.tipo == "fuera_de_alcance" and "motivo" in caso:
         assert r.motivo == caso["motivo"]
