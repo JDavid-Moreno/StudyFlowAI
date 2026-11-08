@@ -3,15 +3,15 @@ mensaje -> intérprete -> (confirmación) -> validador -> MLP -> asignación -> 
 import json
 import os
 import random
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
 from conftest import HOY, LLMSimulado, act, franjas, sem, verificar
-from studyflow.asignacion import EstadoAsignacion, ResultadoAsignacion, ResumenActividad, Sesion, asignar
-from studyflow.disponibilidad import minutos
+from studyflow.asignacion import EstadoAsignacion, ResultadoAsignacion, asignar
 from studyflow.interprete import Contexto, interpretar
 from studyflow.models import PlanEntrada
+from studyflow.ordenes import PlanVigente, aplicar
 from studyflow.redactor import filtrar, redactar, texto_plantilla, validar_texto
 from studyflow.validador import Estado, validar
 from test_interprete import llm_real
@@ -205,57 +205,11 @@ class MLPEspia:
         return self.mlp.predecir(plan, fecha_inicio)
 
 
-def _hora(m: int) -> time:
-    return time(m // 60, m % 60)
-
-
-def fijar_en_destino(horario: ResultadoAsignacion, orden, plan: PlanEntrada) -> list:
-    """Pasa las sesiones del día de origen al de destino (desde hora_inicio, o a la misma hora si no se dio)."""
-    movidas = sorted((s for s in horario.sesiones if s.dia == orden.dia_origen and orden.actividad in (None, s.actividad)),
-                     key=lambda s: s.inicio)
-    assert movidas, "no hay sesiones que mover en ese día"
-    franjas_destino = [f for d in plan.disponibilidad if d.dia == orden.dia_destino for f in d.franjas]
-    fijadas, cursor = [], minutos(orden.hora_inicio or movidas[0].inicio)
-    for s in movidas:
-        fin = cursor + minutos(s.fin) - minutos(s.inicio)
-        assert any(minutos(f.inicio) <= cursor and fin <= minutos(f.fin) for f in franjas_destino), "el destino no tiene espacio a esa hora"
-        fijadas.append(Sesion(actividad=s.actividad, dia=orden.dia_destino, inicio=_hora(cursor), fin=_hora(fin)))
-        cursor = fin
-    return fijadas
-
-
-def unir(plan: PlanEntrada, original: ResultadoAsignacion, replanificado: ResultadoAsignacion, fijadas: list) -> ResultadoAsignacion:
-    """El horario completo que vería el estudiante: lo fijado en el destino más lo replanificado."""
-    sesiones = sorted(list(replanificado.sesiones) + fijadas, key=lambda s: (s.dia, s.inicio))
-    previos = {a.nombre: a.prioridad for a in original.actividades} | {a.nombre: a.prioridad for a in replanificado.actividades}
-    resumen = []
-    for a in plan.actividades:
-        asignadas = sum((minutos(s.fin) - minutos(s.inicio)) / 60 for s in sesiones if s.actividad == a.nombre)
-        faltan = max(0.0, round(a.horas_estimadas - asignadas, 6))
-        estado = EstadoAsignacion.ASIGNADA if faltan == 0 else EstadoAsignacion.NO_ASIGNADA if asignadas == 0 else EstadoAsignacion.PARCIAL
-        resumen.append(ResumenActividad(nombre=a.nombre, prioridad=previos[a.nombre], horas_solicitadas=a.horas_estimadas,
-                                        horas_asignadas=asignadas, horas_faltantes=faltan, estado=estado))
-    return ResultadoAsignacion(sesiones=sesiones, actividades=sorted(resumen, key=lambda a: -a.prioridad))
-
-
-def mover_y_replanificar(plan: PlanEntrada, original: ResultadoAsignacion, orden, hoy: date, mlp, llm_redactor) -> dict:
-    """Lo que hará la capa de aplicación: fija lo movido y manda las horas restantes otra vez por validador, MLP y asignación."""
-    fijadas = fijar_en_destino(original, orden, plan)
-    fijas = {}
-    for s in fijadas:
-        fijas[s.actividad] = fijas.get(s.actividad, 0) + (minutos(s.fin) - minutos(s.inicio)) / 60
-    pendientes = [a.model_copy(update={"horas_estimadas": a.horas_estimadas - fijas.get(a.nombre, 0)})
-                  for a in plan.actividades if a.horas_estimadas - fijas.get(a.nombre, 0) > 1e-9]
-    nuevo = plan.model_copy(update={"actividades": pendientes})
-    assert validar(nuevo, hoy, "replanificacion").estado != Estado.INVIABLE
-    replanificado = asignar(nuevo, mlp.predecir(nuevo, hoy), hoy, fijadas)
-    completo = unir(plan, original, replanificado, fijadas)
-    return {"fijadas": fijadas, "horario": completo, "mensaje": redactar(completo, llm_redactor)}
-
-
 def comprobar_movimiento(plan, original, orden, hoy, espia, llm_redactor):
-    salida = mover_y_replanificar(plan, original, orden, hoy, espia, llm_redactor)
-    completo, fijadas = salida["horario"], salida["fijadas"]
+    """La orden pasa por la capa de órdenes (que fija lo movido y vuelve a consultar al MLP) y el horario nuevo se redacta."""
+    r = aplicar(PlanVigente(plan=plan, horario=original), orden, datetime.combine(hoy, time(0, 0)), espia)
+    assert r.tipo == "aplicada", r.mensaje
+    completo, fijadas = r.horario, r.vigente.fijadas
     verificar(plan.model_dump(), completo, hoy)                          # fechas, disponibilidad, traslapes y resumen
     assert {s.dia for s in fijadas} == {orden.dia_destino} and fijadas[0].inicio == orden.hora_inicio
     assert all(f in completo.sesiones for f in fijadas)                  # la sesión movida quedó donde se pidió
@@ -263,8 +217,9 @@ def comprobar_movimiento(plan, original, orden, hoy, espia, llm_redactor):
         despues = next(x for x in completo.actividades if x.nombre == a.nombre)
         assert despues.horas_asignadas == pytest.approx(a.horas_asignadas)
     assert espia.consultas == 2                                          # el plan original y la replanificación pasaron por el MLP
-    assert validar_texto(salida["mensaje"].texto, completo) == []
-    return salida
+    texto = redactar(completo, llm_redactor)
+    assert validar_texto(texto.texto, completo) == []
+    return {"fijadas": fijadas, "horario": completo, "mensaje": texto}
 
 
 def test_mover_una_sesion_y_replanificar_con_el_mlp(mlp):

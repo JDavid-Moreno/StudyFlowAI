@@ -182,7 +182,7 @@ Reglas:
 8. Prioridad y dificultad solo si el estudiante las mencionó.
 9. Para varios días seguidos ("del jueves al sábado", "toda la semana") pon el primero en fecha y el último en fecha_fin. Para un solo día deja fecha_fin en null.
 10. El motivo por el que el estudiante no puede estudiar (enfermedad, viaje, trabajo) no es un dato de la orden: no lo copies a ningún campo.
-11. En mover_sesion, el día de origen y el de destino deben haberlos dicho: si falta alguno, déjalo en null. No supongas que el origen es hoy.
+11. En mover_sesion, el día de origen y el de destino deben haberlos dicho: si falta alguno, déjalo en null. No supongas que el origen es hoy. Si nombra una actividad ("la sesión del Parcial de IA del jueves"), ponla en "actividad"; déjala en null solo si habla de todo ese día.
 12. Solo hay una orden si el estudiante pide cambiar o consultar algo de su horario. Si solo cuenta una situación (un examen cercano, cansancio, nervios) sin pedir nada, la acción es fuera_de_alcance con motivo sin_sentido.
 
 Hoy es {fecha_texto(ctx.hoy)} de {ctx.hoy.year} ({ctx.hoy.isoformat()}).
