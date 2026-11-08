@@ -14,7 +14,7 @@ El LLM aparece en dos puntos (entender el mensaje y contar el horario) y en ning
 
 | Componente                  | Qué hace                                                                                                  | Estado                                      |
 |-----------------------------|-----------------------------------------------------------------------------------------------------------|---------------------------------------------|
-| LLM intérprete              | Convierte el mensaje del estudiante en una orden de un menú cerrado de 9 acciones                         | **Hecho** (`studyflow/`, probado con OpenAI) |
+| LLM intérprete              | Convierte el mensaje del estudiante en una orden de un menú cerrado de 13 acciones                        | **Hecho** (`studyflow/`, probado con OpenAI) |
 | Validador                   | Revisa la forma de los datos (Pydantic) y que las horas quepan antes de cada fecha límite                 | **Hecho** (`studyflow/`)                    |
 | **MLP**                     | Una red, dos salidas: prioridad de cada actividad y reparto del trabajo en inicio, medio y final          | **Hecho**, entrenado en `modelos/`; se usa desde `studyflow/mlp.py` |
 | Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** (`studyflow/`)                    |
@@ -49,11 +49,13 @@ Recibe el plan validado y las dos salidas del MLP y devuelve sesiones `(activida
 
 ### Capa del LLM (`StudyFlow_CapaLLM.ipynb`)
 
-- **Intérprete:** convierte el mensaje en una de 9 acciones (`crear_plan`, `agregar_actividad`, `quitar_actividad`, `cambiar_fecha_limite`, `cambiar_horas`, `bloquear_dia`, `mover_sesion`, `consultar_horario`, `fuera_de_alcance`). El LLM responde con un esquema JSON estricto y el código lo vuelve a validar. Las fechas las calcula el código, no el LLM. Si falta información, el sistema pregunta en vez de adivinar, y toda orden que cambia algo se confirma antes de aplicarse.
-- **Seguridad:** el mensaje viaja como dato dentro de `<mensaje_usuario>` (máximo 500 caracteres); el LLM no tiene herramientas ni memoria; lo que no es del horario (saludos, código, otros temas, intentos de engaño) termina en `fuera_de_alcance`. Al LLM solo viajan el mensaje, los nombres de las actividades y las fechas y horas del horario.
+- **Intérprete:** convierte el mensaje en una de 13 acciones: `crear_plan`, `agregar_actividad`, `quitar_actividad`, `cambiar_fecha_limite`, `cambiar_horas`, `cambiar_nivel` (prioridad y/o dificultad), `bloquear_dia` (uno o varios días, completos o un rango de horas), `abrir_tiempo` (agregar disponibilidad, siempre con hora de inicio y de fin), `mover_sesion`, `cambiar_limites` (máximo de horas por día y duración de sesión), `responder_decision`, `consultar_horario` y `fuera_de_alcance`. El LLM responde con un esquema JSON estricto y el código lo vuelve a validar. Las fechas las calcula el código, no el LLM. Si falta información, el sistema pregunta en vez de adivinar (por ejemplo, «ya puedo el jueves» sin horas pregunta de qué hora a qué hora), y toda orden que cambia algo se confirma antes de aplicarse.
+- **Varios días:** en `bloquear_dia` y `abrir_tiempo`, `fecha` es el primer día y `fecha_fin` el último, hasta un máximo de 30 días. El sistema no recuerda cómo era la disponibilidad antes de un bloqueo, por eso abrir tiempo exige siempre las horas.
+- **Decisión pendiente:** cuando lo pedido ya no cabe en el tiempo disponible, el estudiante puede abrir más tiempo, recortar (manteniendo intactas las actividades que elija) o cancelar. Las opciones ofrecidas llegan al intérprete en el contexto, puestas por el código, y `responder_decision` solo se acepta si hay una decisión pendiente y la opción es una de ellas. `recortar` se confirma; `abrir_tiempo` y `cancelar` no cambian nada por sí solas, así que no piden confirmación.
+- **Seguridad:** el mensaje viaja como dato dentro de `<mensaje_usuario>` (máximo 500 caracteres); el LLM no tiene herramientas ni memoria; lo que no es del horario (saludos, código, otros temas, intentos de engaño) termina en `fuera_de_alcance`, igual que un comentario sobre su situación que no pide ningún cambio. El motivo de un bloqueo (enfermedad, viaje, trabajo) no se copia a ningún campo ni se guarda. Al LLM solo viajan el mensaje, los nombres de las actividades y las fechas y horas del horario.
 - **Redactor:** cuenta el horario ya calculado en español. Un validador de salida revisa que fechas, horas, duraciones y actividades coincidan con el horario real; si el texto inventa algo, se usa una plantilla de respaldo.
 - **Proveedor:** OpenAI, modelo `gpt-6-luna`. El cliente (`llamar_llm`) reintenta ante fallas pasajeras y no reintenta si se acabó el saldo.
-- **Pruebas:** con un LLM simulado (sin internet) se cubren las 9 acciones, los mensajes vacíos o malformados y las inyecciones. Con el LLM real, 15 de 15 frases interpretadas como se esperaba y los 2 textos del redactor aprobados por el validador de salida.
+- **Pruebas:** con un LLM simulado (sin internet) se cubren las 13 acciones con 34 casos (rangos de varios días, abrir tiempo, límites, niveles y decisiones pendientes), los mensajes vacíos o malformados y las inyecciones. Con el LLM real, 24 de 24 frases interpretadas como se esperaba, sin que ninguna frase ambigua o boba produjera una orden, y los 2 textos del redactor aprobados por el validador de salida.
 
 ### Persistencia (`StudyFlow_Persistencia.ipynb`)
 
@@ -144,7 +146,7 @@ uv run jupyter lab
 
 Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Al final (paso 6) se guarda la red entrenada en `modelos/`; el resto del sistema solo la carga, nunca entrena. Se entrenan varias redes (comparación de pesos y semillas), así que la ejecución completa tarda unos minutos en CPU. Los datasets ya están incluidos en `data/`.
 
-Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion`, `StudyFlow_CapaLLM` y `StudyFlow_Persistencia` también se ejecutan con Run All y no necesitan entrenar nada. El de persistencia importa el paquete `studyflow/`, así que necesita el entorno del proyecto (`uv sync`) como kernel. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real y se omiten solos si no hay clave.
+Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion`, `StudyFlow_CapaLLM` y `StudyFlow_Persistencia` también se ejecutan con Run All y no necesitan entrenar nada. El de persistencia importa el paquete `studyflow/`, así que necesita el entorno del proyecto (`uv sync`) como kernel. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real (26 llamadas) y se omiten solos si no hay clave.
 
 Las pruebas del código en `studyflow/` se ejecutan con pytest (siguiente sección).
 
