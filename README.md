@@ -21,9 +21,10 @@ El LLM aparece en dos puntos (entender el mensaje y contar el horario) y en ning
 | Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** (`studyflow/`)                    |
 | Validador de salida + LLM redactor | Redacta el horario en lenguaje natural y comprueba que el texto no invente nada                    | **Hecho** (`studyflow/`, probado con OpenAI) |
 | Persistencia (SQLite)       | Guarda por estudiante su plan, el horario vigente (con las sesiones que fijó), la orden que espera confirmación y la decisión pendiente; es una capa aparte del flujo | **Hecho** (`studyflow/persistencia.py`) |
+| API (FastAPI)               | Une todas las capas y las expone al front: crear el plan, chat, confirmación, mover e intercambiar bloques | **Hecho** (`studyflow/api.py`, `studyflow/servicio.py`) |
 | Interfaz                    | Página web sin login (prototipo en Figma)                                                                 | Prototipo aparte; el front irá en TypeScript |
 
-Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Falta una API (FastAPI) y el front.
+Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Sobre ellas está la API (FastAPI), descrita en su propia sección. Falta el front.
 
 Los notebooks se conservan a propósito: ahí está la explicación de cada decisión y sirven para experimentar. El código de `studyflow/` es la misma lógica con documentación mínima, así que el código está duplicado entre notebook y `.py`.
 
@@ -50,13 +51,13 @@ Recibe el plan validado y las dos salidas del MLP y devuelve sesiones `(activida
 
 ### Capa del LLM (`StudyFlow_CapaLLM.ipynb`)
 
-- **Intérprete:** convierte el mensaje en una de 13 acciones: `crear_plan`, `agregar_actividad`, `quitar_actividad`, `cambiar_fecha_limite`, `cambiar_horas`, `cambiar_nivel` (prioridad y/o dificultad), `bloquear_dia` (uno o varios días, completos o un rango de horas), `abrir_tiempo` (agregar disponibilidad, siempre con hora de inicio y de fin), `mover_sesion`, `cambiar_limites` (máximo de horas por día y duración de sesión), `responder_decision`, `consultar_horario` y `fuera_de_alcance`. En `mover_sesion`, si el estudiante nombra una actividad se mueve solo esa, y sin actividad se mueven todas las sesiones de ese día. El LLM responde con un esquema JSON estricto y el código lo vuelve a validar. Las fechas las calcula el código, no el LLM. Si falta información, el sistema pregunta en vez de adivinar (por ejemplo, *ya puedo el jueves* sin horas pregunta de qué hora a qué hora), y toda orden que cambia algo se confirma antes de aplicarse.
+- **Intérprete:** convierte el mensaje en una de 13 acciones: `crear_plan`, `agregar_actividad`, `quitar_actividad`, `cambiar_fecha_limite`, `cambiar_horas`, `cambiar_nivel` (prioridad y/o dificultad), `bloquear_dia` (uno o varios días, completos o un rango de horas), `abrir_tiempo` (agregar disponibilidad, siempre con hora de inicio y de fin), `mover_sesion`, `cambiar_limites` (máximo de horas por día y duración de sesión), `responder_decision`, `consultar_horario` y `fuera_de_alcance`. En `mover_sesion`, si el estudiante nombra una actividad se mueve solo esa, y sin actividad se mueven todas las sesiones de ese día. Si además dice a qué hora empieza la sesión que quiere mover (*la del parcial del martes de las 6 de la tarde*), el intérprete la guarda en `hora_origen` y se mueve solo ese bloque. `intercambiar_sesiones` existe como orden, pero el LLM nunca la produce: solo llega desde el calendario (ver la capa de órdenes). El LLM responde con un esquema JSON estricto y el código lo vuelve a validar. Las fechas las calcula el código, no el LLM. Si falta información, el sistema pregunta en vez de adivinar (por ejemplo, *ya puedo el jueves* sin horas pregunta de qué hora a qué hora), y toda orden que cambia algo se confirma antes de aplicarse.
 - **Varios días:** en `bloquear_dia` y `abrir_tiempo`, `fecha` es el primer día y `fecha_fin` el último, hasta un máximo de 30 días. El sistema no recuerda cómo era la disponibilidad antes de un bloqueo, por eso abrir tiempo exige siempre las horas.
 - **Decisión pendiente:** cuando lo pedido ya no cabe en el tiempo disponible, el estudiante puede abrir más tiempo, recortar (manteniendo intactas las actividades que elija) o cancelar. Las opciones ofrecidas llegan al intérprete en el contexto, puestas por el código, y `responder_decision` solo se acepta si hay una decisión pendiente y la opción es una de ellas. `recortar` se confirma; `abrir_tiempo` y `cancelar` no cambian nada por sí solas, así que no piden confirmación.
 - **Seguridad:** el mensaje viaja como dato dentro de `<mensaje_usuario>` (máximo 500 caracteres); el LLM no tiene herramientas ni memoria; lo que no es del horario (saludos, código, otros temas, intentos de engaño) termina en `fuera_de_alcance`, igual que un comentario sobre su situación que no pide ningún cambio. El motivo de un bloqueo (enfermedad, viaje, trabajo) no se copia a ningún campo ni se guarda. Al LLM solo viajan el mensaje, los nombres de las actividades y las fechas y horas del horario.
 - **Redactor:** cuenta el horario ya calculado en español. Un validador de salida revisa que fechas, horas, duraciones y actividades coincidan con el horario real; si el texto inventa algo, se usa una plantilla de respaldo.
 - **Proveedor:** OpenAI, modelo `gpt-6-luna`. El cliente (`llamar_llm`) reintenta ante fallas pasajeras y no reintenta si se acabó el saldo.
-- **Pruebas:** con un LLM simulado (sin internet) se cubren las 13 acciones con 34 casos (rangos de varios días, abrir tiempo, límites, niveles y decisiones pendientes), los mensajes vacíos o malformados y las inyecciones. Con el LLM real, 24 de 24 frases interpretadas como se esperaba, sin que ninguna frase ambigua o boba produjera una orden, y los 2 textos del redactor aprobados por el validador de salida.
+- **Pruebas:** con un LLM simulado (sin internet) se cubren las 13 acciones con 36 casos (rangos de varios días, abrir tiempo, límites, niveles, mover un solo bloque y decisiones pendientes), los mensajes vacíos o malformados y las inyecciones. Con el LLM real, 24 de 24 frases interpretadas como se esperaba (la frase nueva del bloque se añadió después y falta correrla), sin que ninguna frase ambigua o boba produjera una orden, y los 2 textos del redactor aprobados por el validador de salida.
 
 ### Persistencia (`StudyFlow_Persistencia.ipynb`)
 
@@ -90,7 +91,8 @@ El intérprete convierte el mensaje en una orden, pero una orden por sí sola no
   - `quitar_actividad` quita la actividad y sus sesiones, **sin mover las demás**.
   - `bloquear_dia` y `abrir_tiempo` quitan o suman disponibilidad en uno o varios días y replanifican.
   - `cambiar_limites` cambia el máximo diario y/o la duración de sesión.
-  - `mover_sesion` fija las sesiones del día de origen en el destino, a la hora pedida o en el primer hueco, y replanifica el resto; el día de origen queda abierto para todas las actividades.
+  - `mover_sesion` fija las sesiones del día de origen en el destino, a la hora pedida o en el primer hueco, y replanifica el resto; el día de origen queda abierto para todas las actividades. Con `hora_origen` mueve **solo un bloque**: el de esa actividad que incluye esa hora. Un **bloque** son las sesiones seguidas de la misma actividad en un mismo día, que el calendario muestra como una sola pieza. Se rechaza un destino que ya pasó, o el mismo día sin decir la hora.
+  - `intercambiar_sesiones` cambia de lugar dos bloques de actividades distintas: cada uno empieza donde empezaba el otro y conserva su duración. Solo se pide desde el calendario, no por chat. Si los bloques duran distinto, el más largo solo cabe si el tiempo que ocupa de más está libre; si choca con otra sesión se rechaza. También se rechaza si algún bloque ya empezó, si un destino pasa de la fecha límite, se sale del tiempo disponible o supera el máximo diario, o si hay una decisión pendiente. Los dos bloques quedan fijados y nada más se mueve ni se replanifica.
   - Se rechaza, con un mensaje claro, lo que no tiene sentido (un nombre repetido, bloquear donde no había tiempo, mover a un día sin espacio o a una fecha posterior a la entrega) y entonces el plan queda igual.
 - **Reintento antes de declarar que no alcanza:** la asignación atiende las actividades en el orden de prioridad del MLP, y una prioritaria puede ocupar los primeros días y dejar sin espacio a otra que vence antes, aunque el validador diga que todo cabe. Antes de molestar al estudiante, la capa adelanta la actividad incompleta y reintenta; como último recurso ordena por fecha límite. En 283 planes aleatorios que el validador acepta, el orden del MLP solo dejaba algo incompleto en 5 (cerca del 2 %), y el reintento resolvió los 5. El resumen sigue mostrando la prioridad que dio el MLP.
 - **Decisión pendiente:** si lo pedido no cabe, la capa no fuerza nada y devuelve una `Decision` con el plan propuesto, cuánto falta y antes de qué fecha.
@@ -99,7 +101,39 @@ El intérprete convierte el mensaje en una orden, pero una orden por sí sola no
   - **Recortar:** quita horas, en bloques de 30 min, a las actividades **no protegidas** que vencen hasta la fecha crítica, empezando por la de menor prioridad del MLP. Antes de confirmar, la API muestra el recorte exacto.
   - La decisión vence a los 30 minutos, igual que la orden pendiente, y la API la guarda en la tabla `decision_pendiente`.
 - **Qué devuelve:** un `ResultadoOrden` con su tipo (`aplicada`, `decision`, `pregunta`, `cancelada`, `rechazada` o `consulta`), el mensaje, el plan nuevo, el horario y los avisos. Todos los textos los escribe el código, nunca el LLM.
-- **Pruebas:** 40 en `tests/test_ordenes.py`, todas con el MLP real (39 salen de los pasos del notebook y una comprueba que el reintento resuelve siempre lo que deja incompleto el orden del MLP). Cubren las utilidades, la creación del plan, cada orden, la decisión pendiente y 60 secuencias aleatorias de 8 órdenes con el reloj avanzando (464 órdenes: 338 aplicadas, 115 rechazadas, 10 decisiones y 1 cancelación). Después de cada una se comprueba que el plan cumple todas las reglas y que el historial no se perdió, y que un rechazo no cambia nada. El notebook incluye un ejemplo completo paso a paso: bloquear de martes a viernes, no alcanzar, recortar protegiendo el parcial y mover sus sesiones al domingo.
+- **Pruebas:** 44 en `tests/test_ordenes.py`, todas con el MLP real (43 salen de los pasos del notebook y una comprueba que el reintento resuelve siempre lo que deja incompleto el orden del MLP). Cubren las utilidades, la creación del plan, cada orden, la decisión pendiente y 60 secuencias aleatorias de 8 órdenes con el reloj avanzando (464 órdenes: 335 aplicadas, 118 rechazadas, 10 decisiones y 1 cancelación). Después de cada una se comprueba que el plan cumple todas las reglas y que el historial no se perdió, y que un rechazo no cambia nada. El notebook incluye un ejemplo completo paso a paso: bloquear de martes a viernes, no alcanzar, recortar protegiendo el parcial y mover sus sesiones al domingo.
+
+### API (`studyflow/api.py` y `studyflow/servicio.py`)
+
+La API no tiene notebook: es la capa que junta las demás. `servicio.py` tiene la lógica (cargar de la base, llamar al intérprete o a la capa de órdenes, guardar y redactar) y `api.py` solo expone rutas de FastAPI y aplica los límites. Todo el trabajo sobre el plan sigue siendo determinista; el LLM solo interpreta el chat y redacta.
+
+**Identificación.** No hay login. `POST /estudiantes` crea un estudiante y devuelve su identificador anónimo, que el front guarda y envía en el encabezado `X-Estudiante-Id` en todas las demás rutas (404 si no existe). Hay una conexión a SQLite por petición y un candado por estudiante, para que dos peticiones suyas no se pisen.
+
+| Ruta                          | Qué hace                                                                                                             |
+|-------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `GET /salud`                  | Comprueba que la API está arriba                                                                                     |
+| `POST /estudiantes`           | Crea un estudiante anónimo (201)                                                                                     |
+| `GET /estado`                 | Plan, horario, `bloques` ya agrupados para el calendario, sesiones fijadas y decisión pendiente                      |
+| `POST /plan`                  | Crea el plan desde el formulario. Si ya hay uno responde `confirmar_reemplazo` y solo lo reemplaza con `reemplazar: true` |
+| `POST /mensaje`               | Chat: el intérprete entiende la frase (1 a 500 caracteres) y devuelve una confirmación, una pregunta o una consulta |
+| `POST /confirmacion`          | El estudiante acepta o rechaza la orden que esperaba confirmación                                                    |
+| `POST /sesiones/mover`        | Mueve las sesiones de una actividad, o un solo bloque si se envía `hora_origen`. Las horas van en :00 o :30            |
+| `POST /sesiones/intercambiar` | Intercambia dos bloques por su día y hora de inicio                                                                   |
+| `POST /sesiones/no-hecha`     | El botón *no la hice*                                                                                                |
+
+Las respuestas traen un `tipo` (`confirmacion`, `confirmar_reemplazo`, `aplicada`, `decision`, `pregunta`, `consulta`, `cancelada`, `descartada`, `rechazada`, `aclaracion`, `fuera_de_alcance` o `sin_pendiente`), el `mensaje`, el texto del horario cuando cambió, los avisos y el `estado` actualizado.
+
+**Reglas de diseño:**
+
+- **El primer horario sale siempre del formulario**, no del chat. Una vez creado, el chat sirve para modificarlo.
+- **Lo que viene del chat se confirma antes de aplicarse.** Lo que viene del calendario (mover, intercambiar, *no la hice*) se aplica de una vez, porque el front ya pidió la confirmación al estudiante.
+- Si el primer plan no cabe, no se guarda: queda una decisión pendiente (abrir tiempo, recortar o cancelar) y el servicio trabaja sobre el plan propuesto hasta que se resuelva.
+- Un recorte se muestra exacto antes de confirmarlo; si proteger las actividades elegidas no alcanza para recortar lo necesario, se rechaza de inmediato.
+- **Reloj del servidor:** hora de Bogotá (`STUDYFLOW_TZ`), sin zona en los datos. Ninguna fecha ni hora la decide el cliente ni el LLM.
+- **Límites** (en memoria, por lo que la API debe correr con **un solo proceso**): 10 peticiones por minuto por estudiante (429), 20 estudiantes nuevos por hora por IP y 500 llamadas al LLM por día en total. Superado el tope del LLM, el chat no puede interpretar y el redactor usa su plantilla; el resto de la API sigue funcionando.
+- **CORS** solo para los orígenes de `STUDYFLOW_CORS` (por defecto el servidor de desarrollo del front, `http://localhost:5173`).
+
+**Pruebas:** `tests/test_servicio.py` (16) prueba la lógica con el MLP real, un predictor fijo y un LLM guionado; `tests/test_api.py` (9, más 1 con el LLM real) prueba las rutas con una base en memoria: identificación, límites, validaciones (422), reemplazo de plan, mover un bloque, intercambiar, chat con confirmación y los errores.
 
 ## La red neuronal (MLP)
 
@@ -141,6 +175,8 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 │   ├── redactor.py                      Redactor y validador de salida
 │   ├── ordenes.py                       Aplicación de cada orden al plan vigente y decisión pendiente
 │   ├── persistencia.py                  Base SQLite: estudiantes, plan, horario con fijadas, orden y decisión pendientes
+│   ├── servicio.py                      Lógica de la API: junta persistencia, intérprete, capa de órdenes y redactor
+│   ├── api.py                           Rutas de FastAPI, límites de uso y CORS
 │   └── mlp.py                           Entradas del MLP y predicción con la red guardada
 ├── tests/                               Pruebas con pytest (ver la sección Pruebas)
 ├── notebooks/
@@ -158,7 +194,7 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 │   └── escalado.json                    Rangos de escalado de las entradas, deben usarse junto con la red
 ├── generar_dataset.py                   Generador de la v1
 ├── generar_dataset_v2.py                Generador de la v2
-├── .env.example                         Plantilla de configuración del LLM (copiar como .env)
+├── .env.example                         Plantilla de configuración del LLM y de la API (copiar como .env)
 ├── docs/                                Documentación
 ├── pyproject.toml / uv.lock             Dependencias
 └── Proyecto PTIA.pdf                    Documento del proyecto
@@ -181,11 +217,19 @@ Abrir `notebooks/StudyFlow_MLP.ipynb` y ejecutar todas las celdas (Run All). Al 
 
 Los notebooks `StudyFlow_CapaValidacion`, `StudyFlow_CapaAsignacion`, `StudyFlow_CapaLLM`, `StudyFlow_Persistencia` y `StudyFlow_CapaOrdenes` también se ejecutan con Run All y no necesitan entrenar nada. Los de persistencia y órdenes importan el paquete `studyflow/`, así que necesitan el entorno del proyecto (`uv sync`) como kernel; el de órdenes, además, carga la red entrenada de `modelos/` y no usa el LLM ni internet. El de la capa del LLM funciona sin internet con un LLM simulado; sus pasos 5 y 6 usan el LLM real (26 llamadas) y se omiten solos si no hay clave.
 
+### La API
+
+```bash
+uv run uvicorn studyflow.api:app --reload
+```
+
+Queda en `http://localhost:8000`. En `http://localhost:8000/docs` FastAPI genera una página donde cada ruta tiene un botón **Try it out** para probarla sin escribir código: se crea un estudiante con `POST /estudiantes`, se copia su identificador en el campo `x-estudiante-id` de las demás rutas y se sigue desde `POST /plan`. La base es `studyflow.db` en la carpeta actual (cambiable con `STUDYFLOW_DB`) y se crea sola. Sin `OPENAI_API_KEY` todo funciona salvo el chat, y el redactor usa su plantilla. Corra un solo proceso (sin `--workers`): los límites de uso viven en memoria.
+
 Las pruebas del código en `studyflow/` se ejecutan con pytest (siguiente sección).
 
-### Configuración del LLM (opcional)
+### Configuración del LLM y de la API (opcional)
 
-Solo hace falta para los pasos 5 y 6 del notebook de la capa del LLM y para las pruebas con el LLM real (ver la sección Pruebas).
+La clave solo hace falta para el chat de la API, los pasos 5 y 6 del notebook de la capa del LLM y las pruebas con el LLM real (ver la sección Pruebas). Las variables de la API tienen valores por defecto.
 
 ```bash
 cp .env.example .env    # y completar OPENAI_API_KEY
@@ -200,6 +244,12 @@ cp .env.example .env    # y completar OPENAI_API_KEY
 | `OPENAI_MAX_TOKENS_SALIDA` | Tope de tokens de salida, incluye el razonamiento (por defecto 4000)             |
 | `LLM_PAUSA_SEGUNDOS`       | Pausa entre llamadas en las pruebas reales (por defecto 0)                       |
 | `LLM_TIMEOUT_SEGUNDOS`     | Plazo máximo por llamada (por defecto 90)                                        |
+| `STUDYFLOW_DB`             | Archivo de la base SQLite de la API (por defecto `studyflow.db`)                 |
+| `STUDYFLOW_TZ`             | Zona horaria del servidor (por defecto `America/Bogota`)                         |
+| `STUDYFLOW_CORS`           | Orígenes del front permitidos, separados por coma (por defecto `http://localhost:5173`) |
+| `LIMITE_PETICIONES_MIN`    | Peticiones por minuto por estudiante (por defecto 10)                            |
+| `LIMITE_ESTUDIANTES_IP_HORA` | Estudiantes nuevos por hora por IP (por defecto 20)                            |
+| `LIMITE_LLM_DIA`           | Llamadas al LLM por día, en total (por defecto 500)                              |
 
 El archivo `.env` está en `.gitignore`: la clave nunca se sube. Debe estar en la raíz del proyecto y los comandos se ejecutan desde esa carpeta, porque ahí lo busca el código.
 
@@ -220,7 +270,7 @@ uv run pytest -v                           # lo mismo, una línea por prueba
 uv run pytest tests/test_flujo.py -v       # solo el flujo completo
 ```
 
-El resultado esperado es `278 passed, 28 deselected`. Los 28 `deselected` no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
+El resultado esperado es `309 passed, 30 deselected`. Los 30 `deselected` no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
 
 | Archivo                     | Qué prueba                                                                                           |
 |-----------------------------|------------------------------------------------------------------------------------------------------|
@@ -228,10 +278,12 @@ El resultado esperado es `278 passed, 28 deselected`. Los 28 `deselected` no son
 | `test_disponibilidad.py`    | Capacidad efectiva por día                                                                           |
 | `test_validador.py`         | Las reglas de coherencia, con 20 casos                                                               |
 | `test_asignacion.py`        | Funciones auxiliares, 17 casos y 1732 planes aleatorios que no violan ninguna restricción            |
-| `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (34 casos que cubren las 13 acciones, rangos de varios días, decisiones pendientes y puertas de seguridad) y redactor, todo con un LLM simulado |
+| `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (36 casos que cubren las 13 acciones, rangos de varios días, mover un solo bloque, decisiones pendientes y puertas de seguridad) y redactor, todo con un LLM simulado |
 | `test_mlp.py`               | Entradas del MLP calculadas a mano y predicciones con la red guardada                                |
 | `test_persistencia.py`      | Esquema, guardar y cargar el plan, reemplazo, sesiones fijadas, transacción que se deshace si algo falla, órdenes y decisiones pendientes y 874 planes aleatorios (con fijadas) que se guardan y recuperan sin diferencias |
-| `test_ordenes.py`           | Capa de órdenes con el MLP real: utilidades, crear el plan, cada orden, decisión pendiente (recortar, abrir tiempo, cancelar), el reintento de la asignación y 60 secuencias aleatorias de 8 órdenes que no violan ninguna regla ni pierden historial |
+| `test_ordenes.py`           | Capa de órdenes con el MLP real: utilidades, crear el plan, cada orden, mover un solo bloque, intercambiar, decisión pendiente (recortar, abrir tiempo, cancelar), el reintento de la asignación y 60 secuencias aleatorias de 8 órdenes que no violan ninguna regla ni pierden historial |
+| `test_servicio.py`          | Lógica de la API: reemplazo de plan, chat con confirmación, decisión pendiente, recorte, mover y intercambiar bloques, y que un rechazo no cambie nada |
+| `test_api.py`               | Rutas de FastAPI con una base en memoria: identificación (404), límites (429), validaciones (422), flujos completos y errores |
 | `test_flujo.py`             | **Flujo completo**: mensaje -> intérprete -> validador -> MLP -> asignación -> redactor -> JSON para el front. Crear un plan, mover una sesión y replanificar con el MLP (ver abajo), planes inviables que deben detenerse en el validador y 150 planes aleatorios |
 
 ### El flujo completo, paso a paso (`test_flujo.py`)
@@ -267,16 +319,17 @@ Qué tener presente:
 - Al validador y al MLP les llega la capacidad sin el tiempo ya fijado en el destino, de modo que un plan muy apretado no se da por *factible* cuando la asignación quedaría parcial. Si aun así una actividad queda incompleta, la capa reintenta la asignación antes de declarar que no alcanza.
 - Hay una versión con el LLM real (`test_mover_una_sesion_con_llm_real`, ver la tabla de abajo). Usa fechas relativas a hoy en lugar de las fijas, y comprueba lo mismo, pero la orden la interpreta el LLM de verdad.
 
-### Pruebas con el LLM real (las 28 que no corren por defecto)
+### Pruebas con el LLM real (las 30 que no corren por defecto)
 
 Son las que marca `@pytest.mark.llm_real`:
 
 | Prueba                                | Cantidad | Qué comprueba                                                                                 |
 |---------------------------------------|----------|-----------------------------------------------------------------------------------------------|
-| `test_interprete.py::test_llm_real`   | 24       | 24 frases (válidas, ambiguas, bobas y maliciosas; algunas con una decisión pendiente en el contexto). Condición dura: nada ambiguo, tonto o malicioso se vuelve una orden |
+| `test_interprete.py::test_llm_real`   | 25       | 25 frases (válidas, ambiguas, bobas y maliciosas; algunas con una decisión pendiente en el contexto). Condición dura: nada ambiguo, tonto o malicioso se vuelve una orden |
 | `test_redactor.py::test_redactor_llm_real` | 2   | El texto del LLM sobre el horario completo y sobre una consulta pasa el validador de salida y no cae en la plantilla |
 | `test_flujo.py::test_flujo_completo_con_llm_real` | 1 | Un mensaje real recorre todo el flujo hasta el JSON final                              |
 | `test_flujo.py::test_mover_una_sesion_con_llm_real` | 1 | Crea un plan, el LLM real interpreta *no me gustó esta sesión, pásala al sábado a las 9* y el horario se recalcula con el MLP |
+| `test_api.py::test_flujo_con_el_llm_real` | 1 | Por la API: crea un estudiante y un plan, escribe un mensaje real, lo confirma y comprueba el estado |
 
 Para que funcionen:
 
@@ -287,17 +340,17 @@ Para que funcionen:
 uv run pytest -m llm_real -v -s      # -s muestra los textos que escribe el LLM
 ```
 
-Para correr **todo junto** (las 278 normales y las 28 reales): `uv run pytest -m ""`.
+Para correr **todo junto** (las 309 normales y las 30 reales): `uv run pytest -m ""`.
 
 Qué tener presente:
 
-- **Sin clave no fallan: se omiten** (`skipped`). Si ves `28 skipped`, falta la clave en el `.env` o el comando no se ejecutó desde la raíz del proyecto.
-- **Gastan saldo, muy poco:** son 31 llamadas (24 + 2 + 2 del flujo + 3 de mover una sesión, sin contar reintentos). Con `gpt-6-luna` cuestan centavos, pero conviene revisar el saldo antes de una demo.
+- **Sin clave no fallan: se omiten** (`skipped`). Si ves `30 skipped`, falta la clave en el `.env` o el comando no se ejecutó desde la raíz del proyecto.
+- **Gastan saldo, muy poco:** son unas 35 llamadas (25 + 2 + 2 del flujo + 3 de mover una sesión + 3 de la API, sin contar reintentos). Con `gpt-6-luna` cuestan centavos, pero conviene revisar el saldo antes de una demo.
 - **El LLM no es determinista.** Si una frase falla, no siempre es un error del sistema: puede ser un caso donde el LLM respondió distinto a lo esperado. La condición que sí debe cumplirse siempre es que ningún mensaje ambiguo, tonto o malicioso produzca una orden. Se repite la prueba y se mira el mensaje del fallo (con `-s`) antes de tocar el código.
 - Si el saldo se agota, las llamadas fallan con `insufficient_quota`; el cliente no reintenta en ese caso.
 
 ## Tecnologías
 
-Python · Keras / TensorFlow · Pydantic · OpenAI API · SQLite · NumPy · pandas · SciPy · Matplotlib · Jupyter · uv
+Python · Keras / TensorFlow · Pydantic · FastAPI · OpenAI API · SQLite · NumPy · pandas · SciPy · Matplotlib · Jupyter · uv
 
-Previstas para los siguientes pasos: FastAPI y TypeScript (front).
+Prevista para el siguiente paso: TypeScript (front).
