@@ -451,14 +451,42 @@ def _limites(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opcio
     return _replanificar(base, plan, base.fijadas, ahora, mlp, opciones or DESEO)
 
 
+def _bloques(sesiones: list[Sesion]) -> list[list[Sesion]]:
+    """Agrupa las sesiones seguidas de la misma actividad en un mismo día: es lo que el calendario muestra como un bloque."""
+    grupos: list[list[Sesion]] = []
+    for s in sorted(sesiones, key=lambda s: (s.dia, s.inicio)):
+        if grupos and grupos[-1][-1].dia == s.dia and grupos[-1][-1].actividad == s.actividad and grupos[-1][-1].fin == s.inicio:
+            grupos[-1].append(s)
+        else:
+            grupos.append([s])
+    return grupos
+
+
+def _bloque_en(sesiones: list[Sesion], dia: date | None, hora: time | None, actividad: str | None = None) -> list[Sesion]:
+    """El bloque de ese día que incluye esa hora (y es de esa actividad, si se dio); vacío si no hay."""
+    if dia is None or hora is None:
+        return []
+    m = minutos(hora)
+    return next((g for g in _bloques([s for s in sesiones if s.dia == dia])
+                 if minutos(g[0].inicio) <= m < minutos(g[-1].fin) and actividad in (None, g[0].actividad)), [])
+
+
 def _mover(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opciones) -> ResultadoOrden:
-    """Fija las sesiones del día de origen en el destino (a la hora pedida o en el primer hueco) y replanifica el resto."""
+    """Fija las sesiones del día de origen (o solo el bloque de `hora_origen`) en el destino, a la hora pedida o en el primer hueco, y replanifica el resto."""
     plan, destino = base.plan, o.dia_destino
-    movidas = sorted([s for s in base.horario.sesiones if s.dia == o.dia_origen and not _pasada(s, ahora)
-                      and o.actividad in (None, s.actividad)], key=lambda s: s.inicio)
+    pendientes = [s for s in base.horario.sesiones if s.dia == o.dia_origen and not _pasada(s, ahora)]
+    if o.hora_origen is None:        # todas las de esa actividad (o de todo el día)
+        movidas = sorted([s for s in pendientes if o.actividad in (None, s.actividad)], key=lambda s: s.inicio)
+    else:                            # solo el bloque que incluye esa hora
+        movidas = _bloque_en(pendientes, o.dia_origen, o.hora_origen, o.actividad)
     de = f" de {o.actividad}" if o.actividad else ""
     if not movidas:
-        return _rechazo(f"No tienes sesiones{de} pendientes el {fecha_texto(o.dia_origen)}.")
+        a_las = f" a las {o.hora_origen:%H:%M}" if o.hora_origen else ""
+        return _rechazo(f"No tienes sesiones{de} pendientes el {fecha_texto(o.dia_origen)}{a_las}.")
+    if destino < ahora.date():
+        return _rechazo(f"El {fecha_texto(destino)} ya pasó. Elige un día de hoy en adelante.")
+    if destino == o.dia_origen and o.hora_inicio is None:
+        return _rechazo("El día de origen y el de destino son el mismo; dime a qué hora o a qué otro día moverlo.")
     limite = min(_actividad(plan, s.actividad).fecha_limite for s in movidas)
     if destino >= limite:
         return _rechazo(f"El {fecha_texto(destino)} ya no sirve: la entrega es el {fecha_texto(limite)}. Elige un día anterior.")
@@ -495,9 +523,55 @@ def _mover(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opcione
     return _replanificar(base, plan, resto + fijas, ahora, mlp, opciones or DESEO)
 
 
+def _trasladar(bloque: list[Sesion], dia: date, inicio: int) -> list[Sesion] | None:
+    """El bloque con sus mismas duraciones, empezando en `inicio` (minutos) de `dia`; None si pasaría de la medianoche."""
+    out, cursor = [], inicio
+    for s in bloque:
+        if cursor + _dur(s) >= 24 * 60:
+            return None
+        out.append(Sesion(actividad=s.actividad, dia=dia, inicio=_hora(cursor), fin=_hora(cursor + _dur(s))))
+        cursor += _dur(s)
+    return out
+
+
+def _intercambiar(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opciones) -> ResultadoOrden:
+    """Cambia de lugar el bloque A (dia_origen, hora_origen) y el B (dia_destino, hora_inicio): cada uno empieza donde empezaba el otro, sin mover nada más."""
+    if opciones is not None:
+        return _rechazo("Primero resuelve el cambio que no cabía (abrir tiempo, recortar o cancelar).")
+    plan, futuras = base.plan, [s for s in base.horario.sesiones if not _pasada(s, ahora)]
+    a, b = _bloque_en(futuras, o.dia_origen, o.hora_origen), _bloque_en(futuras, o.dia_destino, o.hora_inicio)
+    if not a or not b:
+        return _rechazo("Elige dos sesiones de tu horario que todavía no hayan empezado.")
+    if a[0].actividad == b[0].actividad:
+        return _rechazo(f"Las dos sesiones son de {a[0].actividad}; para cambiarla de hora, muévela.")
+    nueva_a, nueva_b = _trasladar(a, b[0].dia, minutos(b[0].inicio)), _trasladar(b, a[0].dia, minutos(a[0].inicio))
+    resto = [s for s in base.horario.sesiones if s not in a and s not in b]
+    for viejo, nueva, otra, lugar in ((a, nueva_a, nueva_b, b[0]), (b, nueva_b, nueva_a, a[0])):
+        nombre, limite = viejo[0].actividad, _actividad(plan, viejo[0].actividad).fecha_limite
+        no_cabe = f"{nombre} ({_h(_horas(viejo))}) no cabe el {fecha_texto(lugar.dia)} a las {lugar.inicio:%H:%M}"
+        if lugar.dia >= limite:
+            return _rechazo(f"{nombre} vence el {fecha_texto(limite)}; no puede ir el {fecha_texto(lugar.dia)}.")
+        franjas = next((d.franjas for d in plan.disponibilidad if d.dia == lugar.dia), [])
+        piso = _corte(ahora) if lugar.dia == ahora.date() else 0
+        if nueva is None or minutos(nueva[0].inicio) < piso or not all(_cubre(franjas, minutos(s.inicio), minutos(s.fin)) for s in nueva):
+            return _rechazo(f"{no_cabe}: se sale de tu tiempo de estudio de ese día.")
+        choque = next((x for x in resto + (otra or []) if any(_traslapan(s, x) for s in nueva)), None)
+        if choque:
+            return _rechazo(f"{no_cabe}: chocaría con {choque.actividad} de las {choque.inicio:%H:%M}. Solo se puede si ese tiempo está libre.")
+    if plan.max_horas_dia is not None:
+        for d in sorted({a[0].dia, b[0].dia}):
+            if _horas([s for s in resto + nueva_a + nueva_b if s.dia == d]) > plan.max_horas_dia + 1e-9:
+                return _rechazo(f"Con el cambio, el {fecha_texto(d)} pasaría tu máximo de {_h(plan.max_horas_dia)} de estudio.")
+    horario = base.horario.model_copy(update={"sesiones": sorted(resto + nueva_a + nueva_b, key=lambda s: (s.dia, s.inicio))})
+    vigente = PlanVigente(plan=plan, horario=horario, fijadas=[s for s in base.fijadas if s not in a and s not in b] + nueva_a + nueva_b)
+    return ResultadoOrden(tipo="aplicada", vigente=vigente, horario=horario,
+                          mensaje=f"Listo: {a[0].actividad} pasa al {fecha_texto(nueva_a[0].dia)} a las {nueva_a[0].inicio:%H:%M} "
+                                  f"y {b[0].actividad} al {fecha_texto(nueva_b[0].dia)} a las {nueva_b[0].inicio:%H:%M}.")
+
+
 ORDENES = {"cambiar_horas": _cambiar_horas, "cambiar_fecha_limite": _cambiar_fecha, "cambiar_nivel": _cambiar_nivel,
            "agregar_actividad": _agregar, "quitar_actividad": _quitar, "bloquear_dia": _bloquear, "abrir_tiempo": _abrir,
-           "cambiar_limites": _limites, "mover_sesion": _mover}
+           "cambiar_limites": _limites, "mover_sesion": _mover, "intercambiar_sesiones": _intercambiar}
 
 
 def aplicar(vigente: PlanVigente | None, orden: Orden, ahora: datetime, mlp: Predictor, decision: Decision | None = None) -> ResultadoOrden:

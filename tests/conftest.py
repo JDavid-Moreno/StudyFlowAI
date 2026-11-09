@@ -101,3 +101,26 @@ class LLMSimulado:
         if isinstance(self.respuesta, Exception):
             raise self.respuesta
         return self.respuesta if isinstance(self.respuesta, str) else json.dumps(self.respuesta, ensure_ascii=False)
+
+
+# --- API (servicio y rutas) -----------------------------------------------------------------------
+class PredictorFijo:
+    """Hace las veces del MLP: la primera actividad del plan es la más prioritaria y todas reparten parejo."""
+
+    def predecir(self, plan, fecha_inicio):
+        n = len(plan.actividades)
+        return [Prediccion(prioridad=1 - i / (n + 1), perfil=[1 / 3] * 3) for i in range(n)]
+
+
+class LLMGuion:
+    """Hace las veces de `llamar_llm` en un flujo: el intérprete recibe las órdenes del guion en orden y el redactor, un texto fijo."""
+
+    def __init__(self, *ordenes, redactor="Tu horario quedó listo."):
+        self.ordenes, self.redactor, self.llamadas, self.contenidos = list(ordenes), redactor, [], []
+
+    def __call__(self, sistema, contenido, esquema):
+        self.llamadas.append(esquema.__name__)
+        self.contenidos.append(contenido)
+        if esquema.__name__ == "Redaccion":
+            return json.dumps({"mensaje": self.redactor}, ensure_ascii=False)
+        return json.dumps(self.ordenes.pop(0), ensure_ascii=False)

@@ -117,6 +117,13 @@ CASOS_INT = [
     {"nombre": "Mover una sesión con hora", "mensaje": "mueve la sesión del jueves al viernes a las 7 pm",
      "llm": {"accion": "mover_sesion", "dia_origen": sem("jueves"), "dia_destino": sem("viernes"), "hora_inicio": "19:00"},
      "esperado": {"tipo": "orden", "accion": "mover_sesion", "dia_origen": date(2026, 11, 5), "dia_destino": date(2026, 11, 6), "hora_inicio": time(19, 0)}},
+    {"nombre": "Mover un solo bloque", "mensaje": "mueve la sesión del parcial del martes de las 6 de la tarde al jueves",
+     "llm": {"accion": "mover_sesion", "actividad": "Parcial de IA", "dia_origen": sem("martes"), "hora_origen": "18:00", "dia_destino": sem("jueves")},
+     "esperado": {"tipo": "orden", "accion": "mover_sesion", "actividad": "Parcial de IA", "dia_origen": date(2026, 11, 3),
+                  "dia_destino": date(2026, 11, 5), "hora_origen": time(18, 0), "hora_inicio": None}},
+    {"nombre": "Hora de la sesión que no se entiende", "mensaje": "mueve la del martes de las seis al jueves",
+     "llm": {"accion": "mover_sesion", "dia_origen": sem("martes"), "hora_origen": "seis", "dia_destino": sem("jueves")},
+     "esperado": {"tipo": "aclaracion", "contiene": "hora de la sesión"}},
     {"nombre": "Estoy enfermo hoy", "mensaje": "estoy enfermo hoy, pasa todo a mañana",
      "llm": {"accion": "bloquear_dia", "fecha": {"tipo": "hoy"}},
      "esperado": {"tipo": "orden", "accion": "bloquear_dia", "dia": date(2026, 11, 2), "hora_inicio": None}},
@@ -327,6 +334,7 @@ NO_ORDEN = {"aclaracion", "fuera_de_alcance", "rechazada"}
 CTX_REAL_DEC = Contexto(hoy=date.today(), actividades=ACTIVIDADES, decision=["abrir_tiempo", "recortar"])
 CASOS_REAL = [
     {"grupo": "válida", "mensaje": "mueve la sesión del jueves al viernes a las 7 pm", "tipos": {"orden"}, "accion": "mover_sesion", "campos": {"hora_inicio": time(19, 0)}},
+    {"grupo": "válida", "mensaje": "mueve la sesión del parcial de IA del martes de las 6 de la tarde al jueves", "tipos": {"orden"}, "accion": "mover_sesion", "campos": {"actividad": "Parcial de IA", "hora_origen": time(18, 0)}},
     {"grupo": "válida", "mensaje": "estoy enfermo hoy, pasa todo a mañana", "tipos": {"orden"}, "accion": "bloquear_dia"},
     {"grupo": "válida", "mensaje": "el miércoles de 2 a 4 de la tarde no puedo", "tipos": {"orden"}, "accion": "bloquear_dia", "campos": {"hora_inicio": time(14, 0), "hora_fin": time(16, 0)}},
     {"grupo": "válida", "mensaje": "agrega taller de redes, 3 horas, para el viernes, es difícil", "tipos": {"orden"}, "accion": "agregar_actividad"},
