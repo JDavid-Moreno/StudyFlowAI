@@ -380,6 +380,63 @@ def test_mover_a_un_dia_pasado_o_al_mismo_dia_sin_hora(mlp):
     revisar(otra_hora.vigente, AHORA)
 
 
+def test_mover_un_solo_bloque(mlp):
+    """Con hora de origen se mueve solo el bloque que la incluye: las sesiones seguidas de la misma actividad van juntas y lo demás del día se queda."""
+    v = vigente_base(mlp)
+    lunes = date(2026, 11, 2)                # parcial de 18:00 a 20:00 (dos sesiones seguidas) y taller de 20:00 a 21:00
+    taller = aplicar(v, Orden(accion="mover_sesion", dia_origen=lunes, hora_origen=time(20), dia_destino=date(2026, 11, 4),
+                              hora_inicio=time(18)), AHORA, mlp)
+    assert taller.tipo == "aplicada" and [(s.actividad, s.inicio) for s in taller.vigente.fijadas] == [("Taller de redes", time(18))]
+    revisar(taller.vigente, AHORA)
+    parcial = aplicar(v, Orden(accion="mover_sesion", actividad="Parcial de IA", dia_origen=lunes, hora_origen=time(19, 30),
+                               dia_destino=date(2026, 11, 7), hora_inicio=time(14)), AHORA, mlp)
+    assert parcial.tipo == "aplicada"
+    assert [(s.inicio, s.fin) for s in parcial.vigente.fijadas] == [(time(14), time(15, 30)), (time(15, 30), time(16))]
+    revisar(parcial.vigente, AHORA)
+    nada = aplicar(v, Orden(accion="mover_sesion", actividad="Lectura", dia_origen=lunes, hora_origen=time(18),
+                            dia_destino=date(2026, 11, 7)), AHORA, mlp)
+    assert nada.tipo == "rechazada" and "a las 18:00" in nada.mensaje
+
+
+def test_intercambiar_dos_bloques(mlp):
+    """Cada bloque empieza donde empezaba el otro, con su misma duración; los dos quedan fijados y nada más se mueve."""
+    v = vigente_base(mlp)
+    martes, miercoles = date(2026, 11, 3), date(2026, 11, 4)
+    a = [s for s in v.horario.sesiones if s.dia == martes and s.actividad == "Parcial de IA"]          # 18:00-19:30
+    b = [s for s in v.horario.sesiones if s.dia == miercoles and s.actividad == "Taller de redes"]     # 19:30-20:30
+    r = aplicar(v, Orden(accion="intercambiar_sesiones", dia_origen=martes, hora_origen=time(18), dia_destino=miercoles,
+                         hora_inicio=time(19, 30)), AHORA, mlp)
+    assert r.tipo == "aplicada" and "Parcial de IA pasa al miércoles 4 de noviembre a las 19:30" in r.mensaje
+    assert sorted((s.actividad, s.dia, s.inicio, s.fin) for s in r.vigente.fijadas) == [
+        ("Parcial de IA", miercoles, time(19, 30), time(21)), ("Taller de redes", martes, time(18), time(19))]
+    assert [s for s in r.horario.sesiones if s not in r.vigente.fijadas] == [s for s in v.horario.sesiones if s not in a + b]
+    assert r.horario.actividades == v.horario.actividades
+    revisar(r.vigente, AHORA)
+
+
+def test_intercambio_que_no_se_puede(mlp):
+    """Choca con otra sesión, se sale del tiempo de estudio, pasa la fecha límite, es la misma actividad, pasa el máximo diario o hay una decisión abierta."""
+    v = vigente_base(mlp)
+    martes = date(2026, 11, 3)       # parcial 18:00-19:30, taller 19:30-20:30, lectura 20:30-21:00
+    swap = lambda base, d1, h1, d2, h2, decision=None: aplicar(base, Orden(accion="intercambiar_sesiones", dia_origen=d1, hora_origen=h1,
+                                                                            dia_destino=d2, hora_inicio=h2), AHORA, mlp, decision)
+    choque = swap(v, martes, time(18), martes, time(19, 30))
+    assert choque.tipo == "rechazada" and "chocaría con Lectura de las 20:30" in choque.mensaje
+    fuera = swap(v, date(2026, 11, 5), time(18), martes, time(20, 30))
+    assert fuera.tipo == "rechazada" and "se sale de tu tiempo de estudio" in fuera.mensaje
+    tarde = swap(v, date(2026, 11, 2), time(20), date(2026, 11, 7), time(9))
+    assert tarde.tipo == "rechazada" and "Taller de redes vence el jueves 5 de noviembre" in tarde.mensaje
+    misma = swap(v, date(2026, 11, 2), time(18), martes, time(18))
+    assert misma.tipo == "rechazada" and "son de Parcial de IA" in misma.mensaje
+    vacio = swap(v, date(2026, 11, 8), time(10), martes, time(18))
+    assert vacio.tipo == "rechazada" and "Elige dos sesiones" in vacio.mensaje
+    tope = v.model_copy(update={"plan": v.plan.model_copy(update={"max_horas_dia": 2.5})})
+    maximo = swap(tope, date(2026, 11, 2), time(18), date(2026, 11, 6), time(19))
+    assert maximo.tipo == "rechazada" and "pasaría tu máximo" in maximo.mensaje
+    abierta = Decision(propuesto=v, opciones=["abrir_tiempo", "recortar"], faltan_horas=1, fecha_critica=date(2026, 11, 9))
+    assert "Primero resuelve" in swap(v, martes, time(20, 30), date(2026, 11, 2), time(20), abierta).mensaje
+
+
 def test_la_fijada_sobrevive_a_otras_ordenes(mlp):
     """Una sesión movida sigue en su lugar después de otras órdenes que replanifican."""
     v = vigente_base(mlp)

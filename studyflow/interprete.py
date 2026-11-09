@@ -50,6 +50,7 @@ class OrdenLLM(BaseModel):
     fecha_fin: FechaLLM | None = Field(default=None, description="Solo con bloquear_dia y abrir_tiempo cuando son varios días: el último día. Null si es un solo día")
     dia_origen: FechaLLM | None = Field(default=None, description="Solo con mover_sesion")
     dia_destino: FechaLLM | None = Field(default=None, description="Solo con mover_sesion")
+    hora_origen: str | None = Field(default=None, description="Solo con mover_sesion: HH:MM en que empieza la sesión que quiere mover, si la dijo")
     hora_inicio: str | None = Field(default=None, description="HH:MM en 24 horas")
     hora_fin: str | None = Field(default=None, description="HH:MM en 24 horas")
     max_horas_dia: float | None = Field(default=None, description="Solo con cambiar_limites: máximo de horas de estudio por día")
@@ -62,7 +63,8 @@ class OrdenLLM(BaseModel):
 # --- Lo que consume el resto del sistema --------------------------------------------------------
 class Orden(BaseModel):
     accion: Literal["crear_plan", "agregar_actividad", "quitar_actividad", "cambiar_fecha_limite", "cambiar_horas", "cambiar_nivel",
-                    "bloquear_dia", "abrir_tiempo", "mover_sesion", "cambiar_limites", "responder_decision", "consultar_horario"]
+                    "bloquear_dia", "abrir_tiempo", "mover_sesion", "cambiar_limites", "responder_decision", "consultar_horario",
+                    "intercambiar_sesiones"]      # esta última solo llega desde el calendario, nunca del LLM
     actividades: list[Actividad] = []
     actividad: str | None = None
     horas: float | None = None
@@ -72,6 +74,7 @@ class Orden(BaseModel):
     dia_fin: date | None = None
     dia_origen: date | None = None
     dia_destino: date | None = None
+    hora_origen: time | None = None
     hora_inicio: time | None = None
     hora_fin: time | None = None
     max_horas_dia: float | None = None
@@ -130,6 +133,8 @@ def _ejemplos(anio: int) -> list[tuple[str, dict]]:
         ("mueve la sesión del jueves al viernes a las 7 pm",
          {"accion": "mover_sesion", "dia_origen": sem("jueves"), "dia_destino": sem("viernes"), "hora_inicio": "19:00"}),
         ("pasa la sesión al viernes", {"accion": "mover_sesion", "dia_destino": sem("viernes")}),
+        ("mueve la sesión del parcial del martes de las 6 de la tarde al jueves",
+         {"accion": "mover_sesion", "actividad": "Parcial de IA", "dia_origen": sem("martes"), "hora_origen": "18:00", "dia_destino": sem("jueves")}),
         ("estoy enfermo hoy, pasa todo a mañana", {"accion": "bloquear_dia", "fecha": {"tipo": "hoy"}}),
         ("el miércoles de 2 a 4 de la tarde no puedo",
          {"accion": "bloquear_dia", "fecha": sem("miércoles"), "hora_inicio": "14:00", "hora_fin": "16:00"}),
@@ -182,7 +187,7 @@ Reglas:
 8. Prioridad y dificultad solo si el estudiante las mencionó.
 9. Para varios días seguidos ("del jueves al sábado", "toda la semana") pon el primero en fecha y el último en fecha_fin. Para un solo día deja fecha_fin en null.
 10. El motivo por el que el estudiante no puede estudiar (enfermedad, viaje, trabajo) no es un dato de la orden: no lo copies a ningún campo.
-11. En mover_sesion, el día de origen y el de destino deben haberlos dicho: si falta alguno, déjalo en null. No supongas que el origen es hoy. Si nombra una actividad ("la sesión del Parcial de IA del jueves"), ponla en "actividad"; déjala en null solo si habla de todo ese día.
+11. En mover_sesion, el día de origen y el de destino deben haberlos dicho: si falta alguno, déjalo en null. No supongas que el origen es hoy. Si nombra una actividad ("la sesión del Parcial de IA del jueves"), ponla en "actividad"; déjala en null solo si habla de todo ese día. Si dice a qué hora empieza la sesión que quiere mover ("la de las 6"), ponla en hora_origen; hora_inicio es la hora a la que la quiere llevar.
 12. Solo hay una orden si el estudiante pide cambiar o consultar algo de su horario. Si solo cuenta una situación (un examen cercano, cansancio, nervios) sin pedir nada, la acción es fuera_de_alcance con motivo sin_sentido.
 
 Hoy es {fecha_texto(ctx.hoy)} de {ctx.hoy.year} ({ctx.hoy.isoformat()}).
@@ -443,10 +448,12 @@ def resolver(o: OrdenLLM, ctx: Contexto) -> Respuesta:
     if o.accion == "mover_sesion":
         origen, p1 = _fecha(o.dia_origen, ctx, "el día de origen")
         destino, p2 = _fecha(o.dia_destino, ctx, "el día de destino")
-        hora = resolver_hora(o.hora_inicio)
+        hora, hora_origen = resolver_hora(o.hora_inicio), resolver_hora(o.hora_origen)
         problemas = [p for p in (p1, p2) if p]
         if o.hora_inicio and hora is None:
             problemas.append("no logré entender la hora")
+        if o.hora_origen and hora_origen is None:
+            problemas.append("no logré entender la hora de la sesión que quieres mover")
         if problemas:
             return Aclaracion(mensaje=_frase("; ".join(problemas)))
         nombre, err = _actividad(o.actividad, ctx, obligatoria=False)
@@ -454,9 +461,12 @@ def resolver(o: OrdenLLM, ctx: Contexto) -> Respuesta:
             return Aclaracion(mensaje=err)
         if origen == destino and hora is None:
             return Aclaracion(mensaje="El día de origen y el de destino son el mismo; dime a qué hora o a qué otro día moverlo.")
-        que = f"las sesiones de {nombre}" if nombre else "todas las sesiones"
+        if hora_origen:
+            que = f"la sesión de {nombre} de las {hora_origen:%H:%M}" if nombre else f"la sesión de las {hora_origen:%H:%M}"
+        else:
+            que = f"las sesiones de {nombre}" if nombre else "todas las sesiones"
         a_la = f", empezando a las {hora:%H:%M}" if hora else ""
-        return _orden(Orden(accion=o.accion, actividad=nombre, dia_origen=origen, dia_destino=destino, hora_inicio=hora),
+        return _orden(Orden(accion=o.accion, actividad=nombre, dia_origen=origen, dia_destino=destino, hora_inicio=hora, hora_origen=hora_origen),
                       f"mover {que} del {fecha_texto(origen)} al {fecha_texto(destino)}{a_la}")
 
     if o.accion == "cambiar_limites":

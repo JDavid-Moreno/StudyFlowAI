@@ -1,4 +1,5 @@
 """Pruebas de las rutas de la API con TestClient, un MLP fijo y un LLM simulado. Ver README, sección API."""
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -45,7 +46,7 @@ def test_identificador_desconocido_o_ausente(tmp_path):
         assert c.get("/estado", headers={"X-Estudiante-Id": "no-existe"}).status_code == 404
         assert c.get("/estado").status_code == 422
         h = nuevo(c)
-        assert c.get("/estado", headers=h).json() == {"plan": None, "horario": None, "fijadas": [], "decision": None}
+        assert c.get("/estado", headers=h).json() == {"plan": None, "horario": None, "bloques": [], "fijadas": [], "decision": None}
 
 
 def test_flujo_completo_por_http(tmp_path):
@@ -76,6 +77,9 @@ def test_mover_y_no_hecha_por_http(tmp_path):
         r = c.post("/sesiones/mover", json=cuerpo, headers=h).json()
         assert r["tipo"] == "aplicada" and r["estado"]["fijadas"]
         assert c.post("/sesiones/mover", json={**cuerpo, "hora_inicio": "18:15"}, headers=h).status_code == 422
+        a, b = r["estado"]["bloques"][0], next(x for x in r["estado"]["bloques"] if x["actividad"] != r["estado"]["bloques"][0]["actividad"])
+        cambio = c.post("/sesiones/intercambiar", json={"a": {"dia": a["dia"], "hora": a["inicio"]}, "b": {"dia": b["dia"], "hora": b["inicio"]}}, headers=h)
+        assert cambio.status_code == 200 and cambio.json()["tipo"] in ("aplicada", "rechazada") and cambio.json()["mensaje"]
         futura = {"actividad": "Taller", "dia": f(4, HOY), "inicio": "18:00:00", "fin": "19:00:00"}
         assert c.post("/sesiones/no-hecha", json=futura, headers=h).json()["tipo"] == "rechazada"     # todavía no ha pasado
 
@@ -129,3 +133,25 @@ def test_cors_solo_para_el_front(tmp_path):
         mal = c.options("/estado", headers={"Origin": "http://otro.com", "Access-Control-Request-Method": "GET"})
     assert bien.headers.get("access-control-allow-origin") == "http://localhost:5173"
     assert "access-control-allow-origin" not in mal.headers
+
+
+@pytest.mark.llm_real
+def test_flujo_con_el_llm_real(tmp_path):
+    """Crear el plan, pedir un cambio por chat y confirmarlo con el LLM y el MLP reales (3 llamadas al LLM)."""
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        pytest.skip("sin OPENAI_API_KEY en el .env")
+    pytest.importorskip("keras")
+    from studyflow.llm import llamar_llm
+    from studyflow.mlp import PredictorMLP
+    with TestClient(crear_app(Config(ruta_db=str(tmp_path / "real.db")), mlp=PredictorMLP(), llamar=llamar_llm)) as c:
+        h = nuevo(c)
+        creado = c.post("/plan", json={"plan": plan_json()}, headers=h).json()
+        assert creado["tipo"] == "aplicada" and creado["texto_horario"]
+        print("\nRedactor:", creado["texto_horario"])
+        pedido = c.post("/mensaje", json={"texto": "pasado mañana no puedo estudiar"}, headers=h).json()
+        assert pedido["tipo"] == "confirmacion", pedido
+        print("Confirmación:", pedido["mensaje"])
+        hecho = c.post("/confirmacion", json={"aceptar": True}, headers=h).json()
+        assert hecho["tipo"] == "aplicada", hecho
+        assert not any(s["dia"] == f(2, HOY) for s in hecho["estado"]["horario"]["sesiones"])
+        print("Después del cambio:", hecho["texto_horario"])

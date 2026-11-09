@@ -54,6 +54,7 @@ class Mover(BaseModel):
     dia_origen: date
     dia_destino: date
     hora_inicio: time | None = None   # sin hora: el primer hueco del destino
+    hora_origen: time | None = None   # una hora dentro del bloque arrastrado (lo normal: su inicio); sin ella se mueven todas las de ese día
 
     @field_validator("hora_inicio")
     @classmethod
@@ -61,6 +62,16 @@ class Mover(BaseModel):
         if h is not None and (h.minute not in (0, 30) or h.second or h.microsecond):
             raise ValueError("la hora debe ser en punto o y media (bloques de 30 min)")
         return h
+
+
+class Lugar(BaseModel):
+    dia: date
+    hora: time                        # cualquier hora dentro del bloque (lo normal: su inicio)
+
+
+class Intercambio(BaseModel):
+    a: Lugar
+    b: Lugar
 
 
 class NuevoEstudiante(BaseModel):
@@ -183,7 +194,12 @@ def crear_app(config: Config | None = None, mlp: Predictor | None = None, llamar
     @app.post("/sesiones/mover")
     def mover(cuerpo: Mover, x_estudiante_id: str = Header()) -> Respuesta:
         with servicio(x_estudiante_id) as s:
-            return s.mover(x_estudiante_id, cuerpo.actividad, cuerpo.dia_origen, cuerpo.dia_destino, cuerpo.hora_inicio)
+            return s.mover(x_estudiante_id, cuerpo.actividad, cuerpo.dia_origen, cuerpo.dia_destino, cuerpo.hora_inicio, cuerpo.hora_origen)
+
+    @app.post("/sesiones/intercambiar")
+    def intercambiar(cuerpo: Intercambio, x_estudiante_id: str = Header()) -> Respuesta:
+        with servicio(x_estudiante_id) as s:
+            return s.intercambiar(x_estudiante_id, cuerpo.a.dia, cuerpo.a.hora, cuerpo.b.dia, cuerpo.b.hora)
 
     @app.post("/sesiones/no-hecha")
     def no_hecha(cuerpo: Sesion, x_estudiante_id: str = Header()) -> Respuesta:

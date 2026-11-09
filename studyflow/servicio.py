@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from studyflow.asignacion import ResultadoAsignacion, Sesion
 from studyflow.interprete import Contexto, Llamar, Opcion, Orden, OrdenValida, interpretar
 from studyflow.models import PlanEntrada
-from studyflow.ordenes import Decision, PlanVigente, Predictor, ResultadoOrden, aplicar, crear_plan, marcar_no_hecha, proponer_recorte, \
-    texto_recorte
+from studyflow.ordenes import Decision, PlanVigente, Predictor, ResultadoOrden, _bloques, aplicar, crear_plan, marcar_no_hecha, \
+    proponer_recorte, texto_recorte
 from studyflow.persistencia import (cargar_plan, descartar_decision_pendiente, descartar_orden_pendiente, guardar_decision_pendiente,
                                     guardar_orden_pendiente, guardar_plan, leer_decision_pendiente, nuevo_estudiante, tomar_orden_pendiente)
 from studyflow.redactor import redactar
@@ -26,11 +26,22 @@ class DecisionVista(BaseModel):
     fecha_critica: date
 
 
+class Bloque(BaseModel):
+    """Sesiones seguidas de la misma actividad en un día, como las muestra el calendario."""
+
+    actividad: str
+    dia: date
+    inicio: time
+    fin: time
+    fijado: bool          # tiene al menos una sesión fijada
+
+
 class Estado(BaseModel):
-    """Lo que el front pinta: el plan, el horario completo, las sesiones fijadas y la decisión pendiente."""
+    """Lo que el front pinta: el plan, el horario completo (y agrupado en bloques), las sesiones fijadas y la decisión pendiente."""
 
     plan: PlanEntrada | None = None
     horario: ResultadoAsignacion | None = None
+    bloques: list[Bloque] = []
     fijadas: list[Sesion] = []
     decision: DecisionVista | None = None
 
@@ -69,7 +80,9 @@ class Servicio:
         vista = DecisionVista(opciones=d.opciones, faltan_horas=d.faltan_horas, fecha_critica=d.fecha_critica) if d else None
         if g is None:
             return Estado(decision=vista)
-        return Estado(plan=g.plan, horario=g.horario, fijadas=g.fijadas, decision=vista)
+        bloques = [Bloque(actividad=b[0].actividad, dia=b[0].dia, inicio=b[0].inicio, fin=b[-1].fin, fijado=any(s in g.fijadas for s in b))
+                   for b in _bloques(g.horario.sesiones)]
+        return Estado(plan=g.plan, horario=g.horario, bloques=bloques, fijadas=g.fijadas, decision=vista)
 
     # --- Peticiones --------------------------------------------------------------------------------
     def crear_plan(self, e: str, plan: PlanEntrada, reemplazar: bool) -> Respuesta:
@@ -112,10 +125,18 @@ class Servicio:
         vigente, d = self._cargar(e)
         return self._guardar(e, aplicar(vigente, orden, self.ahora, self.mlp, d))
 
-    def mover(self, e: str, actividad: str, dia_origen: date, dia_destino: date, hora_inicio: time | None) -> Respuesta:
-        """Mover desde el calendario: el front ya pidió confirmación, así que se aplica de una vez."""
+    def mover(self, e: str, actividad: str, dia_origen: date, dia_destino: date, hora_inicio: time | None,
+              hora_origen: time | None = None) -> Respuesta:
+        """Mover desde el calendario (con `hora_origen`, solo ese bloque): el front ya pidió confirmación, así que se aplica de una vez."""
         vigente, d = self._cargar(e)
-        orden = Orden(accion="mover_sesion", actividad=actividad, dia_origen=dia_origen, dia_destino=dia_destino, hora_inicio=hora_inicio)
+        orden = Orden(accion="mover_sesion", actividad=actividad, dia_origen=dia_origen, dia_destino=dia_destino, hora_inicio=hora_inicio,
+                      hora_origen=hora_origen)
+        return self._guardar(e, aplicar(vigente, orden, self.ahora, self.mlp, d))
+
+    def intercambiar(self, e: str, dia_a: date, hora_a: time, dia_b: date, hora_b: time) -> Respuesta:
+        """Intercambiar dos bloques desde el calendario (cada hora puede ser cualquiera dentro de su bloque); también se aplica de una vez."""
+        vigente, d = self._cargar(e)
+        orden = Orden(accion="intercambiar_sesiones", dia_origen=dia_a, hora_origen=hora_a, dia_destino=dia_b, hora_inicio=hora_b)
         return self._guardar(e, aplicar(vigente, orden, self.ahora, self.mlp, d))
 
     def no_hecha(self, e: str, sesion: Sesion) -> Respuesta:
