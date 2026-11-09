@@ -5,7 +5,8 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 
-from studyflow.asignacion import EstadoAsignacion, ResultadoAsignacion, Sesion, asignar
+from conftest import INICIO, plan_captura
+from studyflow.asignacion import EstadoAsignacion, Prediccion, ResultadoAsignacion, Sesion, asignar
 from studyflow.disponibilidad import BLOQUE_MIN, minutos
 from studyflow.interprete import Orden
 from studyflow.models import Actividad, DisponibilidadDia, Franja, PlanEntrada
@@ -60,6 +61,19 @@ def vigente_base(mlp) -> PlanVigente:
     r = crear_plan(plan_base(), AHORA, mlp)
     assert r.tipo == "aplicada", r.mensaje
     return r.vigente
+
+
+def vigente_fijo(mlp) -> PlanVigente:
+    """El plan de siempre con el horario escrito a mano (el de la semana: parcial en dos sesiones seguidas el lunes, taller y lectura repartidos), para
+    las pruebas de mover e intercambiar, que no deben depender de cómo reparte el algoritmo de asignación."""
+    v = vigente_base(mlp)
+    dato = [("Parcial de IA", 2, "18:00", "19:30"), ("Parcial de IA", 2, "19:30", "20:00"), ("Taller de redes", 2, "20:00", "21:00"),
+            ("Parcial de IA", 3, "18:00", "19:30"), ("Taller de redes", 3, "19:30", "20:30"), ("Lectura", 3, "20:30", "21:00"),
+            ("Parcial de IA", 4, "18:00", "19:30"), ("Taller de redes", 4, "19:30", "20:30"),
+            ("Parcial de IA", 5, "18:00", "19:00"), ("Parcial de IA", 6, "18:00", "19:00"), ("Lectura", 6, "19:00", "19:30"),
+            ("Parcial de IA", 7, "09:00", "10:00"), ("Lectura", 10, "18:00", "18:30"), ("Lectura", 11, "18:00", "18:30")]
+    sesiones = [Sesion(actividad=a, dia=date(2026, 11, d), inicio=i, fin=f) for a, d, i, f in dato]
+    return v.model_copy(update={"horario": v.horario.model_copy(update={"sesiones": sesiones})})
 
 
 def de(v: PlanVigente, nombre: str) -> list[Sesion]:
@@ -330,7 +344,7 @@ def test_mover_sesion_con_hora(mlp):
 
 def test_mover_sesion_sin_hora(mlp):
     """Sin hora, la sesión va al primer hueco del destino donde quepa entera."""
-    v = vigente_base(mlp)
+    v = vigente_fijo(mlp)
     origen = de(v, "Lectura")[0]
     r = aplicar(v, Orden(accion="mover_sesion", actividad="Lectura", dia_origen=origen.dia, dia_destino=date(2026, 11, 7)), AHORA, mlp)
     assert r.tipo == "aplicada" and r.vigente.fijadas[0].inicio == time(9) and r.vigente.fijadas[0].dia == date(2026, 11, 7)
@@ -382,7 +396,7 @@ def test_mover_a_un_dia_pasado_o_al_mismo_dia_sin_hora(mlp):
 
 def test_mover_un_solo_bloque(mlp):
     """Con hora de origen se mueve solo el bloque que la incluye: las sesiones seguidas de la misma actividad van juntas y lo demás del día se queda."""
-    v = vigente_base(mlp)
+    v = vigente_fijo(mlp)
     lunes = date(2026, 11, 2)                # parcial de 18:00 a 20:00 (dos sesiones seguidas) y taller de 20:00 a 21:00
     taller = aplicar(v, Orden(accion="mover_sesion", dia_origen=lunes, hora_origen=time(20), dia_destino=date(2026, 11, 4),
                               hora_inicio=time(18)), AHORA, mlp)
@@ -400,7 +414,7 @@ def test_mover_un_solo_bloque(mlp):
 
 def test_intercambiar_dos_bloques(mlp):
     """Cada bloque empieza donde empezaba el otro, con su misma duración; los dos quedan fijados y nada más se mueve."""
-    v = vigente_base(mlp)
+    v = vigente_fijo(mlp)
     martes, miercoles = date(2026, 11, 3), date(2026, 11, 4)
     a = [s for s in v.horario.sesiones if s.dia == martes and s.actividad == "Parcial de IA"]          # 18:00-19:30
     b = [s for s in v.horario.sesiones if s.dia == miercoles and s.actividad == "Taller de redes"]     # 19:30-20:30
@@ -416,7 +430,7 @@ def test_intercambiar_dos_bloques(mlp):
 
 def test_intercambio_que_no_se_puede(mlp):
     """Choca con otra sesión, se sale del tiempo de estudio, pasa la fecha límite, es la misma actividad, pasa el máximo diario o hay una decisión abierta."""
-    v = vigente_base(mlp)
+    v = vigente_fijo(mlp)
     martes = date(2026, 11, 3)       # parcial 18:00-19:30, taller 19:30-20:30, lectura 20:30-21:00
     swap = lambda base, d1, h1, d2, h2, decision=None: aplicar(base, Orden(accion="intercambiar_sesiones", dia_origen=d1, hora_origen=h1,
                                                                             dia_destino=d2, hora_inicio=h2), AHORA, mlp, decision)
@@ -695,3 +709,15 @@ def test_el_reintento_resuelve_lo_que_el_orden_del_mlp_deja_incompleto(mlp):
     assert cuenta["planes que caben según el validador"] > 100
     assert cuenta["con el orden del MLP queda algo incompleto"] > 0
     assert cuenta["el reintento lo resuelve"] == cuenta["con el orden del MLP queda algo incompleto"]
+
+
+def test_el_respaldo_de_30_min_es_el_ultimo_recurso():
+    """Plan ajustado (34 h en 34,5 h libres): con el orden del MLP queda 1 h sin ubicar; adelantar la actividad lo resuelve sin partir nada en sesiones de 30 min."""
+    plan = PlanEntrada(**plan_captura())
+    p = _preparar(PlanVigente(plan=plan, horario=ResultadoAsignacion(sesiones=[], actividades=[])), plan, [], datetime.combine(INICIO, time(0, 0)))
+    preds = [Prediccion(prioridad=x, perfil=[0.5, 0.3, 0.2]) for x in (0.6, 0.3, 0.9, 0.7, 0.1)]
+    assert any(a.horas_faltantes for a in asignar(p.asignable, preds, INICIO, p.ocupadas, respaldo=False).actividades)
+    r = _asignar(p, preds, INICIO)
+    assert all(x.estado == EstadoAsignacion.ASIGNADA for x in r.actividades)
+    assert all(_dur(s) >= 60 for s in r.sesiones)
+    assert [sum(s.actividad == n for s in r.sesiones) for n in ("lab FDSI", "Quiz ARSW")] == [1, 1]

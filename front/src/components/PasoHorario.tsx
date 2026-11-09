@@ -20,6 +20,9 @@ interface Props {
   onNoHecha: (b: Bloque) => void;
 }
 
+/** Alto de una hora en el calendario (en px). */
+const PX_HORA = 72;
+
 type Zona = { dia: string; ok: boolean; titulo: string; sesion?: string } | null;
 
 export function PasoHorario(p: Props) {
@@ -135,6 +138,13 @@ export function PasoHorario(p: Props) {
     else moverADia(a, dia);
   };
 
+  const claseZona = (d: string) => (zona && zona.dia === d && !zona.sesion ? (zona.ok ? 'dz-ok' : 'dz-mal') : '');
+  const eventosDia = (d: string) => ({
+    onDragOver: (e: DragEvent<HTMLDivElement>) => alPasar(e, d),
+    onDragLeave: (e: DragEvent<HTMLDivElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setZona(null); },
+    onDrop: (e: DragEvent<HTMLDivElement>) => alSoltar(e, d),
+  });
+
   const clicSesion = (e: ReactMouseEvent<HTMLDivElement>, b: Bloque) => {
     const op = (e.target as HTMLElement).dataset.op;
     if (op === 'no') return pedirNoHecha(b);
@@ -149,6 +159,15 @@ export function PasoHorario(p: Props) {
     if (x + 290 > window.innerWidth - 10) x = Math.max(10, r.left - 298);
     setPop({ b, x: Math.max(10, x), y: Math.max(10, Math.min(r.top, window.innerHeight - 330)) });
   };
+
+  // Rango de horas de la semana visible: de una hora antes de la primera sesión a una hora después de la última.
+  const minutos = bsSemana.flatMap((b) => [toMin(b.inicio), toMin(b.fin)]);
+  let h0 = minutos.length ? Math.max(0, Math.floor(Math.min(...minutos) / 60) - 1) : 8;
+  let h1 = minutos.length ? Math.min(24, Math.ceil(Math.max(...minutos) / 60) + 1) : 18;
+  if (h1 - h0 < 6) { h1 = Math.min(24, h0 + 6); h0 = h1 - 6; }
+  const nHoras = h1 - h0;
+  const alto = nHoras * PX_HORA;
+  const y = (min: number) => ((min - h0 * 60) / 60) * PX_HORA;
 
   const d0 = fecha(dias[0]), d6 = fecha(dias[6]);
   const subtitulo = `Semana del ${d0.getDate()} al ${d6.getDate()} de ${MESESL[d6.getMonth()]}`;
@@ -213,56 +232,86 @@ export function PasoHorario(p: Props) {
               : 'Arrastra una sesión a otro día para moverla, o encima de otra para intercambiarlas. Con un clic eliges la hora. Las sesiones con borde punteado están fijadas (las moviste tú).'}
           </div>
 
-          <div className="calendario" id="cal">
-            {dias.map((d) => {
-              const bs = estado.bloques.filter((b) => b.dia === d).sort((a, b) => toMin(a.inicio) - toMin(b.inicio));
-              const entregas = plan.actividades.filter((a) => a.fecha_limite === d);
-              const enPlan = d >= primero && d <= ultimo;
-              const sinTiempo = enPlan && !plan.disponibilidad.some((x) => x.dia === d) && !bs.length;
-              const z = zona && zona.dia === d && !zona.sesion ? (zona.ok ? 'dz-ok' : 'dz-mal') : '';
-              return (
-                <div
-                  key={d}
-                  className={`col-dia ${d === hoy ? 'hoy' : ''} ${enPlan ? '' : 'fuera'} ${z}`}
-                  data-dia={d}
-                  title={zona && zona.dia === d ? zona.titulo : undefined}
-                  onDragOver={(e) => alPasar(e, d)}
-                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setZona(null); }}
-                  onDrop={(e) => alSoltar(e, d)}
-                >
-                  <div className="cab">{DIAS[fecha(d).getDay()].toUpperCase()}<b>{fecha(d).getDate()}</b></div>
-                  {sinTiempo && <div className="sin-tiempo">Sin tiempo libre</div>}
-                  {entregas.map((a) => <div className="entrega" key={a.nombre}>📌 Entrega {a.nombre}</div>)}
-                  {bs.map((b) => {
-                    const k = claveBloque(b);
-                    const zs = zona?.sesion === k ? (zona.ok ? 'sw-ok' : 'sw-mal') : '';
-                    return (
-                      <div
-                        key={k}
-                        data-clave={k}
-                        className={`sesion s-${indiceColor(plan, b.actividad)} ${b.fijado ? 'fijada' : ''} ${swap && claveBloque(swap) === k ? 'swapsel' : ''} ${arrastrando && claveBloque(arrastrando) === k ? 'arrastrando' : ''} ${zs}`}
-                        draggable
-                        tabIndex={0}
-                        role="button"
-                        title={b.actividad}
-                        aria-label={`${b.actividad} ${hm(b.inicio)} a ${hm(b.fin)}`}
-                        onDragStart={(e) => { setPop(null); setArrastrando(b); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', k); }}
-                        onDragEnd={() => { setArrastrando(null); setZona(null); }}
-                        onClick={(e) => clicSesion(e, b)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') clicSesion(e as unknown as ReactMouseEvent<HTMLDivElement>, b); }}
-                      >
-                        <b>{b.actividad}</b>
-                        <span>{hm(b.inicio)}–{hm(b.fin)}</span>
-                        <div className="marcar">
-                          <i data-op="mas" title="Más opciones: mover a otra hora, intercambiar">⋯</i>
-                          {yaEmpezo(b, hoy, ctx.ahora) && <i data-op="no" title="No la hice">✕ No</i>}
-                        </div>
-                      </div>
-                    );
-                  })}
+          <div className="cal-scroll">
+            <div className="cal-ancho" id="cal">
+              <div className="cal-fila cal-cabs">
+                <div />
+                {dias.map((d) => {
+                  const entregas = plan.actividades.filter((a) => a.fecha_limite === d);
+                  const enPlan = d >= primero && d <= ultimo;
+                  const sinTiempo = enPlan && !plan.disponibilidad.some((x) => x.dia === d) && !estado.bloques.some((b) => b.dia === d);
+                  return (
+                    <div
+                      key={d}
+                      className={`cab-dia ${d === hoy ? 'hoy' : ''} ${enPlan ? '' : 'fuera'} ${claseZona(d)}`}
+                      {...eventosDia(d)}
+                    >
+                      <div className="cab">{DIAS[fecha(d).getDay()].toUpperCase()}<b>{fecha(d).getDate()}</b></div>
+                      {sinTiempo && <div className="sin-tiempo">Sin tiempo libre</div>}
+                      {entregas.map((a) => <div className="entrega" key={a.nombre}>📌 Entrega {a.nombre}</div>)}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="cal-fila cal-cuerpo">
+                <div className="horas" style={{ height: alto }} aria-hidden="true">
+                  {Array.from({ length: nHoras + 1 }, (_, i) => (
+                    <span key={i} style={{ top: i * PX_HORA }}>{toStr((h0 + i) * 60)}</span>
+                  ))}
                 </div>
-              );
-            })}
+                {dias.map((d) => {
+                  const bs = estado.bloques.filter((b) => b.dia === d).sort((a, b) => toMin(a.inicio) - toMin(b.inicio));
+                  const enPlan = d >= primero && d <= ultimo;
+                  const franjas = plan.disponibilidad.find((x) => x.dia === d)?.franjas ?? [];
+                  return (
+                    <div
+                      key={d}
+                      className={`col-dia ${d === hoy ? 'hoy' : ''} ${enPlan ? '' : 'fuera'} ${claseZona(d)}`}
+                      data-dia={d}
+                      style={{ height: alto }}
+                      title={zona && zona.dia === d ? zona.titulo : undefined}
+                      {...eventosDia(d)}
+                    >
+                      {franjas.map((f, i) => {
+                        const a = Math.max(toMin(f.inicio), h0 * 60), c = Math.min(toMin(f.fin), h1 * 60);
+                        return c > a ? <div className="disp" key={i} style={{ top: y(a), height: y(c) - y(a) }} /> : null;
+                      })}
+                      <div className="lineas" />
+                      {bs.map((b) => {
+                        const k = claveBloque(b);
+                        const zs = zona?.sesion === k ? (zona.ok ? 'sw-ok' : 'sw-mal') : '';
+                        const dur = duracion(b);
+                        return (
+                          <div
+                            key={k}
+                            data-clave={k}
+                            className={`sesion s-${indiceColor(plan, b.actividad)} ${dur < 60 ? 'corta' : ''} ${dur < 90 ? 'sm' : ''} ${b.fijado ? 'fijada' : ''} ${swap && claveBloque(swap) === k ? 'swapsel' : ''} ${arrastrando && claveBloque(arrastrando) === k ? 'arrastrando' : ''} ${zs}`}
+                            style={{ top: y(toMin(b.inicio)) + 1, height: (dur / 60) * PX_HORA - 2 }}
+                            draggable
+                            tabIndex={0}
+                            role="button"
+                            title={`${b.actividad} · ${hm(b.inicio)}–${hm(b.fin)}`}
+                            aria-label={`${b.actividad} ${hm(b.inicio)} a ${hm(b.fin)}`}
+                            onDragStart={(e) => { setPop(null); setArrastrando(b); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', k); }}
+                            onDragEnd={() => { setArrastrando(null); setZona(null); }}
+                            onClick={(e) => clicSesion(e, b)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') clicSesion(e as unknown as ReactMouseEvent<HTMLDivElement>, b); }}
+                          >
+                            <b>{b.actividad}</b>
+                            <span>{hm(b.inicio)}–{hm(b.fin)}</span>
+                            <div className="marcar">
+                              <i data-op="mas" title="Más opciones: mover a otra hora, intercambiar">⋯</i>
+                              {yaEmpezo(b, hoy, ctx.ahora) && <i data-op="no" title="No la hice">✕ No</i>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="no-asignadas">

@@ -275,24 +275,35 @@ def _texto_decision(d: Decision) -> str:
 
 
 def _asignar(p: Preparado, predicciones: list[Prediccion], hoy: date) -> ResultadoAsignacion:
-    """Asigna en el orden del MLP; si una actividad queda incompleta, la adelanta y reintenta; al final prueba por fecha límite."""
+    """Asigna en el orden del MLP; si una actividad queda incompleta, la adelanta y reintenta; al final prueba por fecha límite.
+    Solo si aun así falta algo se permite el respaldo de la asignación (sin las reglas de sesión única y de 1 h mínima)."""
     nombres = [a.nombre for a in p.pendientes]
     incompletas = lambda r: [x.nombre for x in r.actividades if x.estado != EstadoAsignacion.ASIGNADA]
-    adelantadas: list[str] = []
-    for _ in range(len(nombres)):
-        orden = [Prediccion(prioridad=(x.prioridad + 1) / 2 if n in adelantadas else x.prioridad / 2, perfil=x.perfil)
-                 for n, x in zip(nombres, predicciones)]
-        r = asignar(p.asignable, orden, hoy, p.ocupadas)
-        nuevas = [n for n in incompletas(r) if n not in adelantadas]
-        if not nuevas:
-            break
-        adelantadas += nuevas
+    faltan = lambda r: sum(x.horas_faltantes for x in r.actividades)
+
+    def intentar(respaldo: bool) -> ResultadoAsignacion:
+        adelantadas: list[str] = []
+        for _ in range(len(nombres)):
+            orden = [Prediccion(prioridad=(x.prioridad + 1) / 2 if n in adelantadas else x.prioridad / 2, perfil=x.perfil)
+                     for n, x in zip(nombres, predicciones)]
+            r = asignar(p.asignable, orden, hoy, p.ocupadas, respaldo)
+            nuevas = [n for n in incompletas(r) if n not in adelantadas]
+            if not nuevas:
+                break
+            adelantadas += nuevas
+        if incompletas(r):
+            fechas = sorted(range(len(nombres)), key=lambda i: (p.pendientes[i].fecha_limite, -predicciones[i].prioridad))
+            rango = {i: 1 - k / len(nombres) for k, i in enumerate(fechas)}
+            por_fecha = asignar(p.asignable, [Prediccion(prioridad=rango[i], perfil=x.perfil) for i, x in enumerate(predicciones)], hoy, p.ocupadas, respaldo)
+            if len(incompletas(por_fecha)) < len(incompletas(r)):
+                r = por_fecha
+        return r
+
+    r = intentar(False)
     if incompletas(r):
-        fechas = sorted(range(len(nombres)), key=lambda i: (p.pendientes[i].fecha_limite, -predicciones[i].prioridad))
-        rango = {i: 1 - k / len(nombres) for k, i in enumerate(fechas)}
-        por_fecha = asignar(p.asignable, [Prediccion(prioridad=rango[i], perfil=x.perfil) for i, x in enumerate(predicciones)], hoy, p.ocupadas)
-        if len(incompletas(por_fecha)) < len(incompletas(r)):
-            r = por_fecha
+        con_respaldo = intentar(True)
+        if (len(incompletas(con_respaldo)), faltan(con_respaldo)) < (len(incompletas(r)), faltan(r)):
+            r = con_respaldo
     mlp = dict(zip(nombres, (x.prioridad for x in predicciones)))          # el resumen muestra la prioridad que dio el MLP
     return r.model_copy(update={"actividades": [x.model_copy(update={"prioridad": mlp[x.nombre]}) for x in r.actividades]})
 
@@ -410,7 +421,7 @@ def _quitar(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opcion
     plan = base.plan.model_copy(update={"actividades": [x for x in base.plan.actividades if x.nombre != a.nombre]})
     sesiones = [s for s in base.horario.sesiones if s.actividad != a.nombre]
     horario = _resumen(plan, sesiones, {x.nombre: x.prioridad for x in base.horario.actividades})
-    fijadas = [s for s in base.fijadas if s.actividad != a.nombre]
+    fijadas = [s for s in base.fijadas if s.actividad != a.nombre and not _pasada(s, ahora)]     # una fijada que ya pasó es historial
     vigente = PlanVigente(plan=plan, horario=horario, fijadas=fijadas)
     if opciones:      # había una decisión pendiente: quitar una actividad puede resolverla, así que se revisa
         return _replanificar(vigente, plan, fijadas, ahora, mlp, opciones)

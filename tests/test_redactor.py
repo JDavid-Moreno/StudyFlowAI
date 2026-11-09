@@ -38,7 +38,7 @@ def test_texto_fiel():
 
 
 def test_filtros():
-    assert [s.actividad for s in filtrar(R_DEMO, actividad="Informe").sesiones] == ["Informe", "Informe"]
+    assert [s.actividad for s in filtrar(R_DEMO, actividad="Informe").sesiones] == ["Informe"]
     assert [a.nombre for a in filtrar(R_DEMO, actividad="Informe").actividades] == ["Informe"]
     assert filtrar(R_DEMO, dia=HOY).actividades == [] and len(filtrar(R_DEMO, dia=HOY).sesiones) > 0
     assert filtrar(R_DEMO) is R_DEMO
