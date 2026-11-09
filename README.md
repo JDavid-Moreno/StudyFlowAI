@@ -20,7 +20,7 @@ El LLM aparece en dos puntos (entender el mensaje y contar el horario) y en ning
 | **MLP**                     | Una red, dos salidas: prioridad de cada actividad y reparto del trabajo en inicio, medio y final          | **Hecho**, entrenado en `modelos/`; se usa desde `studyflow/mlp.py` |
 | Capa de asignación          | Coloca las sesiones en el calendario de forma determinista                                                | **Hecho** (`studyflow/`)                    |
 | Validador de salida + LLM redactor | Redacta el horario en lenguaje natural y comprueba que el texto no invente nada                    | **Hecho** (`studyflow/`, probado con OpenAI) |
-| Persistencia (SQLite)       | Guarda por estudiante su plan, el horario vigente y la orden que espera confirmación; es una capa aparte del flujo | **Hecho** (`studyflow/persistencia.py`) |
+| Persistencia (SQLite)       | Guarda por estudiante su plan, el horario vigente (con las sesiones que fijó), la orden que espera confirmación y la decisión pendiente; es una capa aparte del flujo | **Hecho** (`studyflow/persistencia.py`) |
 | Interfaz                    | Página web sin login (prototipo en Figma)                                                                 | Prototipo aparte; el front irá en TypeScript |
 
 Cada capa se desarrolló y se probó por completo en su propio notebook, y su código ya está mudado al paquete `studyflow/` con sus pruebas en `tests/` (incluidas las del flujo completo, de punta a punta). Falta una API (FastAPI) y el front.
@@ -62,13 +62,14 @@ Recibe el plan validado y las dos salidas del MLP y devuelve sesiones `(activida
 
 Es una capa **aparte del flujo**: ninguna capa la importa. La API lee de la base antes de llamar al flujo y guarda el resultado después. Usa `sqlite3` de la librería estándar, sin ORM y sin dependencias nuevas.
 
-- **Qué guarda:** el estudiante (con un identificador anónimo, porque la página no tiene login), su plan vigente (actividades, franjas de disponibilidad, duración de sesión, máximo diario), el horario vigente con la prioridad del MLP y la orden que espera confirmación. No guarda el texto del chat.
-- **Siete tablas:** `estudiantes`, `planes`, `actividades`, `franjas`, `sesiones`, `resumen` y `orden_pendiente`. Con `ON DELETE CASCADE`, al borrar un plan se borra todo lo suyo.
+- **Qué guarda:** el estudiante (con un identificador anónimo, porque la página no tiene login), su plan vigente (actividades, franjas de disponibilidad, duración de sesión, máximo diario), el horario vigente con la prioridad del MLP y las sesiones que el estudiante fijó, la orden que espera confirmación y la decisión pendiente. No guarda el texto del chat.
+- **Ocho tablas:** `estudiantes`, `planes`, `actividades`, `franjas`, `sesiones`, `resumen`, `orden_pendiente` y `decision_pendiente`. Con `ON DELETE CASCADE`, al borrar un plan se borra todo lo suyo.
 - **Guardar es reemplazar, en una sola transacción:** se guarda todo o nada. Si un cambio deja el plan inviable no se guarda y el estudiante conserva el que tenía. Crear un plan nuevo con el mismo identificador reemplaza al anterior.
+- **Sesiones fijadas:** son sesiones del horario con una marca (`fijada` en `sesiones`), no una tabla aparte. `guardar_plan` las recibe y rechaza (`ValueError`) una que no esté en el horario; `cargar_plan` las devuelve en `PlanGuardado.fijadas`, que es lo que la capa de órdenes recibe en `PlanVigente.fijadas`. Las sesiones pasadas no necesitan marca: la capa de órdenes las toma como hechas por su fecha y hora.
 - **Al cargar, todo vuelve a pasar por Pydantic**, y los `CHECK` del esquema son una segunda barrera para los valores básicos.
 - **Orden pendiente:** una por estudiante (la nueva reemplaza a la anterior) y vence a los 30 minutos, para no aplicar fechas que el intérprete resolvió otro día.
-- **Pruebas:** 20, con una base en memoria. Cubren el esquema, guardar y cargar, el reemplazo, que un fallo a mitad de camino conserve el plan anterior, que los estudiantes no se mezclen, las órdenes pendientes y 874 planes aleatorios que se guardan y se recuperan sin diferencias.
-- **Pendiente (lo pide la capa de órdenes):** marcar en `sesiones` cuáles están fijadas y guardar la decisión pendiente junto a la orden pendiente (pueden existir a la vez), con el mismo vencimiento de 30 minutos. Las sesiones pasadas no necesitan marca: la capa de órdenes las toma como hechas.
+- **Decisión pendiente:** cuando un cambio no cabe, la `Decision` de la capa de órdenes (plan propuesto con su horario y fijadas, opciones, horas que faltan y fecha crítica) se guarda completa como JSON. Es una por estudiante y vence a los 30 minutos, como la orden. A diferencia de la orden, **se lee sin borrarla** (el estudiante puede escribir otras cosas antes de resolverla), **coexiste con la orden pendiente** (responder a una decisión es una orden que también se confirma) y la borra `guardar_plan` en su misma transacción, porque hablaba del plan que había.
+- **Pruebas:** 35, con una base en memoria. Cubren el esquema, guardar y cargar, el reemplazo, que un fallo a mitad de camino conserve el plan anterior, que los estudiantes no se mezclen, las sesiones fijadas, las órdenes y las decisiones pendientes, y 874 planes aleatorios (con fijadas al azar) que se guardan y se recuperan sin diferencias.
 - Las bases `*.db` están en el `.gitignore`: contienen datos de estudiantes y no deben subirse al repositorio.
 
 ### Capa de órdenes (`StudyFlow_CapaOrdenes.ipynb`)
@@ -96,7 +97,7 @@ El intérprete convierte el mensaje en una orden, pero una orden por sí sola no
   - Un cambio que el estudiante pidió (horas, fecha, actividad nueva, límites, mover) se puede **cancelar**. Un bloqueo o una sesión no hecha ya ocurrieron, así que solo se ofrece abrir tiempo o recortar.
   - **Abrir tiempo:** la capa pregunta qué días y horas agregar. Mientras la decisión esté pendiente, toda orden se aplica sobre el plan propuesto, de modo que *el domingo puedo de 9 a 13* se suma al bloqueo.
   - **Recortar:** quita horas, en bloques de 30 min, a las actividades **no protegidas** que vencen hasta la fecha crítica, empezando por la de menor prioridad del MLP. Antes de confirmar, la API muestra el recorte exacto.
-  - La decisión vence a los 30 minutos, igual que la orden pendiente.
+  - La decisión vence a los 30 minutos, igual que la orden pendiente, y la API la guarda en la tabla `decision_pendiente`.
 - **Qué devuelve:** un `ResultadoOrden` con su tipo (`aplicada`, `decision`, `pregunta`, `cancelada`, `rechazada` o `consulta`), el mensaje, el plan nuevo, el horario y los avisos. Todos los textos los escribe el código, nunca el LLM.
 - **Pruebas:** 40 en `tests/test_ordenes.py`, todas con el MLP real (39 salen de los pasos del notebook y una comprueba que el reintento resuelve siempre lo que deja incompleto el orden del MLP). Cubren las utilidades, la creación del plan, cada orden, la decisión pendiente y 60 secuencias aleatorias de 8 órdenes con el reloj avanzando (464 órdenes: 338 aplicadas, 115 rechazadas, 10 decisiones y 1 cancelación). Después de cada una se comprueba que el plan cumple todas las reglas y que el historial no se perdió, y que un rechazo no cambia nada. El notebook incluye un ejemplo completo paso a paso: bloquear de martes a viernes, no alcanzar, recortar protegiendo el parcial y mover sus sesiones al domingo.
 
@@ -139,7 +140,7 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 │   ├── interprete.py                    Intérprete de órdenes
 │   ├── redactor.py                      Redactor y validador de salida
 │   ├── ordenes.py                       Aplicación de cada orden al plan vigente y decisión pendiente
-│   ├── persistencia.py                  Base SQLite: estudiantes, plan, horario y orden pendiente
+│   ├── persistencia.py                  Base SQLite: estudiantes, plan, horario con fijadas, orden y decisión pendientes
 │   └── mlp.py                           Entradas del MLP y predicción con la red guardada
 ├── tests/                               Pruebas con pytest (ver la sección Pruebas)
 ├── notebooks/
@@ -147,7 +148,7 @@ Los objetivos se cumplen con margen, pero la regresión lineal también los cump
 │   ├── StudyFlow_CapaValidacion.ipynb   Pydantic, capacidad efectiva y validador de coherencia
 │   ├── StudyFlow_CapaAsignacion.ipynb   Algoritmo de asignación de sesiones
 │   ├── StudyFlow_CapaLLM.ipynb          Intérprete, redactor, validador de salida y pruebas con el LLM real
-│   ├── StudyFlow_Persistencia.ipynb     Esquema SQLite, guardar y cargar el plan, orden pendiente
+│   ├── StudyFlow_Persistencia.ipynb     Esquema SQLite, guardar y cargar el plan y las fijadas, orden y decisión pendientes
 │   └── StudyFlow_CapaOrdenes.ipynb      Aplicación de cada orden, decisión pendiente, ejemplo completo y pruebas
 ├── data/
 │   ├── dataset_studyflow.csv            Dataset v1 (secciones 2.1 a 2.5 del notebook del MLP)
@@ -219,7 +220,7 @@ uv run pytest -v                           # lo mismo, una línea por prueba
 uv run pytest tests/test_flujo.py -v       # solo el flujo completo
 ```
 
-El resultado esperado es `263 passed, 28 deselected`. Los 28 `deselected` no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
+El resultado esperado es `278 passed, 28 deselected`. Los 28 `deselected` no son un error: son las pruebas con el **LLM real**, que se apartan por defecto porque necesitan la clave de OpenAI, gastan saldo y el LLM no siempre responde igual.
 
 | Archivo                     | Qué prueba                                                                                           |
 |-----------------------------|------------------------------------------------------------------------------------------------------|
@@ -229,7 +230,7 @@ El resultado esperado es `263 passed, 28 deselected`. Los 28 `deselected` no son
 | `test_asignacion.py`        | Funciones auxiliares, 17 casos y 1732 planes aleatorios que no violan ninguna restricción            |
 | `test_llm.py`, `test_interprete.py`, `test_redactor.py` | Cliente, intérprete (34 casos que cubren las 13 acciones, rangos de varios días, decisiones pendientes y puertas de seguridad) y redactor, todo con un LLM simulado |
 | `test_mlp.py`               | Entradas del MLP calculadas a mano y predicciones con la red guardada                                |
-| `test_persistencia.py`      | Esquema, guardar y cargar el plan, reemplazo, transacción que se deshace si algo falla, órdenes pendientes y 874 planes aleatorios que se guardan y recuperan sin diferencias |
+| `test_persistencia.py`      | Esquema, guardar y cargar el plan, reemplazo, sesiones fijadas, transacción que se deshace si algo falla, órdenes y decisiones pendientes y 874 planes aleatorios (con fijadas) que se guardan y recuperan sin diferencias |
 | `test_ordenes.py`           | Capa de órdenes con el MLP real: utilidades, crear el plan, cada orden, decisión pendiente (recortar, abrir tiempo, cancelar), el reintento de la asignación y 60 secuencias aleatorias de 8 órdenes que no violan ninguna regla ni pierden historial |
 | `test_flujo.py`             | **Flujo completo**: mensaje -> intérprete -> validador -> MLP -> asignación -> redactor -> JSON para el front. Crear un plan, mover una sesión y replanificar con el MLP (ver abajo), planes inviables que deben detenerse en el validador y 150 planes aleatorios |
 
@@ -286,7 +287,7 @@ Para que funcionen:
 uv run pytest -m llm_real -v -s      # -s muestra los textos que escribe el LLM
 ```
 
-Para correr **todo junto** (las 263 normales y las 28 reales): `uv run pytest -m ""`.
+Para correr **todo junto** (las 278 normales y las 28 reales): `uv run pytest -m ""`.
 
 Qué tener presente:
 
