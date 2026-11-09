@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import logo from './assets/logo.png';
 import { api, ErrorApi } from './api';
-import type { Bloque, Estado, Opcion, Respuesta } from './api';
-import { hoyISO, hm } from './utils/fechas';
-import { type Formulario, aPlanEntrada, formularioEjemplo, formularioVacio, validarFormulario } from './utils/formulario';
+import type { Bloque, DecisionVista, Estado, Opcion, Respuesta } from './api';
+import { ahoraMin, etiquetaL, fmtH, hm, hoyISO, toMin } from './utils/fechas';
+import { type Formulario, aPlanEntrada, formularioEjemplo, formularioVacio, planAFormulario, validarFormulario } from './utils/formulario';
+import { yaEmpezo } from './utils/horario';
+import { borrarPendiente, guardarPendiente, leerPendiente } from './utils/pendiente';
 import { type DatosModal, Modal, Toasts, useToasts } from './components/Avisos';
 import { PasoDisponibilidad } from './components/PasoDisponibilidad';
 import { PasoActividades } from './components/PasoActividades';
 import { PasoHorario } from './components/PasoHorario';
 import { BotonAsistente, Chat, type MensajeChat } from './components/Asistente';
+
+/** Si es true, el horario contado por el redactor (texto_horario) se muestra en el chat al consultar, crear el plan o aplicar un cambio del chat. */
+const MOSTRAR_TEXTO_HORARIO = true;
 
 const ir = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 const TEXTO_OPCION: Record<Opcion, string> = {
@@ -18,6 +23,11 @@ const TEXTO_OPCION: Record<Opcion, string> = {
 };
 
 let idMensaje = 0;
+const bot = (texto: string, extra: Partial<MensajeChat> = {}): MensajeChat => ({ id: ++idMensaje, rol: 'bot', texto, ...extra });
+
+/** Mensaje de una decisión que se recupera al recargar (la API solo guarda las opciones, no el texto). */
+const textoDecision = (d: DecisionVista) =>
+  `No me alcanza el tiempo: faltan ${fmtH(d.faltan_horas * 60)} antes del ${etiquetaL(d.fecha_critica)}. ¿Cómo lo resolvemos?`;
 
 export default function App() {
   const hoy = hoyISO();
@@ -25,6 +35,7 @@ export default function App() {
   const [errores, setErrores] = useState<string[]>([]);
   const [estado, setEstado] = useState<Estado | null>(null);
   const [generando, setGenerando] = useState(false);
+  const [trabajando, setTrabajando] = useState(false);
   const [versionPlan, setVersionPlan] = useState(0);
   const [avisos, setAvisos] = useState<string[]>([]);
   const [mensajes, setMensajes] = useState<MensajeChat[]>([]);
@@ -36,15 +47,61 @@ export default function App() {
   const ocupado = useRef(false);
 
   const hayPlan = !!estado?.plan;
+  /** El asistente también existe cuando el primer plan no cupo: no hay horario, pero sí una decisión pendiente. */
+  const hayAsistente = hayPlan || !!estado?.decision;
 
-  // Al iniciar: identificador y estado guardado (en el cliente simulado arranca vacío).
-  useEffect(() => {
-    api.estado().then(setEstado).catch(() => setEstado(null));
+  const reiniciarTodo = useCallback(() => {
+    setEstado(null);
+    setMensajes([]);
+    setAvisos([]);
+    setChatAbierto(false);
+    borrarPendiente();
   }, []);
 
+  const manejarError = useCallback(
+    (e: unknown) => {
+      if (e instanceof ErrorApi && e.status === 404)
+        return setModal({
+          titulo: 'No encontramos tu sesión',
+          contenido: <p>El identificador que guardaba este navegador ya no existe en el servidor, así que el horario anterior no se puede recuperar. Empezaremos de nuevo con un identificador nuevo.</p>,
+          ok: 'Entendido',
+          soloOk: true,
+          onOk: reiniciarTodo,
+        });
+      if (e instanceof ErrorApi) return toast(e.message, 'err');
+      toast('Ocurrió un error inesperado. Intenta de nuevo.', 'err');
+    },
+    [toast, reiniciarTodo],
+  );
+
+  // Al abrir la página: estado guardado, decisión pendiente y confirmación pendiente.
   useEffect(() => {
-    document.body.classList.toggle('chat-abierto', chatAbierto);
-  }, [chatAbierto]);
+    let vivo = true;
+    api
+      .estado()
+      .then((e) => {
+        if (!vivo) return;
+        setEstado(e);
+        if (e.plan && e.plan.actividades.every((a) => a.fecha_limite > hoy)) setForm(planAFormulario(e.plan, hoy));
+        const inicial: MensajeChat[] = [];
+        if (e.decision) inicial.push(bot(textoDecision(e.decision), { tipo: 'decision', activa: true }));
+        else {
+          const p = leerPendiente();
+          if (p && e.plan) inicial.push(bot(p, { tipo: 'confirmacion', activa: true }));
+        }
+        if (inicial.length) setMensajes(inicial);
+      })
+      .catch((e) => {
+        if (vivo && !(e instanceof ErrorApi && e.status === 404)) manejarError(e); // un 404 al abrir solo significa empezar de cero
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [manejarError, hoy]);
+
+  useEffect(() => {
+    document.body.classList.toggle('chat-abierto', chatAbierto && hayAsistente);
+  }, [chatAbierto, hayAsistente]);
 
   const pendiente: 'confirmacion' | 'decision' | null = estado?.decision
     ? 'decision'
@@ -52,35 +109,18 @@ export default function App() {
       ? 'confirmacion'
       : null;
 
-  const agregarBot = useCallback((r: Respuesta) => {
+  /** Agrega al chat la respuesta de la API (y, si se pide, el horario contado por el redactor). */
+  const agregarBot = useCallback((r: Respuesta, conTexto = true) => {
+    if (r.tipo === 'confirmacion') guardarPendiente(r.mensaje);
+    else borrarPendiente();
     setMensajes((ms) => {
-      const sinBotones = ms.map((m) => (m.activa ? { ...m, activa: false } : m));
-      return [...sinBotones, { id: ++idMensaje, rol: 'bot', texto: r.mensaje, tipo: r.tipo, activa: r.tipo === 'confirmacion' || r.tipo === 'decision' }];
+      const nuevos: MensajeChat[] = [];
+      if (r.mensaje) nuevos.push(bot(r.mensaje, { tipo: r.tipo, activa: r.tipo === 'confirmacion' || r.tipo === 'decision' }));
+      if (conTexto && MOSTRAR_TEXTO_HORARIO && r.texto_horario) nuevos.push(bot(r.texto_horario));
+      return [...ms.map((m) => (m.activa ? { ...m, activa: false } : m)), ...nuevos];
     });
     if (r.tipo === 'confirmacion' || r.tipo === 'decision') setBurbuja(true);
   }, []);
-
-  const manejarError = useCallback(
-    (e: unknown) => {
-      if (e instanceof ErrorApi && e.status === 429) return toast(e.message, 'err');
-      if (e instanceof ErrorApi && e.status === 404)
-        return setModal({
-          titulo: 'No encontramos tu identificador',
-          contenido: <p>Este navegador guardaba un identificador que ya no existe. Podemos crearte uno nuevo, pero el horario anterior no se puede recuperar.</p>,
-          ok: 'Crear uno nuevo',
-          soloOk: true,
-          onOk: () => {
-            setEstado(null);
-            setMensajes([]);
-            setAvisos([]);
-            setChatAbierto(false);
-          },
-        });
-      if (e instanceof ErrorApi && e.status === 422) return toast(e.message, 'err');
-      toast('No pudimos conectar con el servidor. Intenta de nuevo en unos segundos.', 'err');
-    },
-    [toast],
-  );
 
   /** Aplica una respuesta de la API: estado, avisos y, si corresponde, el mensaje en el chat. */
   const procesar = useCallback(
@@ -90,7 +130,7 @@ export default function App() {
       if (origen === 'chat') return agregarBot(r);
       if (r.tipo === 'aplicada') toast(r.mensaje, 'ok');
       else if (r.tipo === 'decision') {
-        agregarBot(r);
+        agregarBot(r, false);
         setChatAbierto(true);
       } else toast(r.mensaje, r.tipo === 'rechazada' ? 'err' : '');
     },
@@ -99,18 +139,20 @@ export default function App() {
 
   /** Evita mandar dos cambios a la vez (la API también tiene un candado por estudiante). */
   const unaVez = async (fn: () => Promise<void>) => {
-    if (ocupado.current) return;
+    if (ocupado.current) return toast('Espera un momento: todavía estoy aplicando el cambio anterior.', 'warn');
     ocupado.current = true;
+    setTrabajando(true);
     try {
       await fn();
     } catch (e) {
       manejarError(e);
     } finally {
       ocupado.current = false;
+      setTrabajando(false);
     }
   };
 
-  // --- Crear el plan ---
+  // --- Crear el plan (POST /plan) ---
   const crear = (reemplazar: boolean) =>
     unaVez(async () => {
       setGenerando(true);
@@ -120,10 +162,23 @@ export default function App() {
           setModal({ titulo: 'Ya tienes un plan', contenido: <p>{r.mensaje}</p>, ok: 'Sí, reemplazar', cancelar: 'Volver', onOk: () => crear(true) });
           return;
         }
+        if (r.tipo === 'rechazada') {
+          setErrores([r.mensaje]);
+          setTimeout(() => document.getElementById('errores')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 30);
+          return;
+        }
+        setErrores([]);
         setEstado(r.estado);
         setAvisos(r.avisos);
         setVersionPlan((v) => v + 1);
-        setMensajes([{ id: ++idMensaje, rol: 'bot', texto: r.mensaje, tipo: r.tipo }]);
+        borrarPendiente();
+        if (r.tipo === 'decision') {
+          // El primer plan no cupo: no hay horario todavía, solo la decisión.
+          setMensajes([bot(r.mensaje, { tipo: 'decision', activa: true })]);
+          setChatAbierto(true);
+          return;
+        }
+        setMensajes([bot(r.mensaje, { tipo: r.tipo }), ...(MOSTRAR_TEXTO_HORARIO && r.texto_horario ? [bot(r.texto_horario)] : [])]);
         setBurbuja(true);
         toast(reemplazar ? 'Plan reemplazado. Este es tu nuevo horario.' : 'Listo, este es tu horario.', 'ok');
         setTimeout(() => ir('s-hor'), 60);
@@ -142,10 +197,10 @@ export default function App() {
     crear(false);
   };
 
-  // --- Chat ---
+  // --- Chat (POST /mensaje y POST /confirmacion) ---
   const enviar = (texto: string) =>
     unaVez(async () => {
-      setMensajes((ms) => [...ms, { id: ++idMensaje, rol: 'usuario', texto }]);
+      setMensajes((ms) => [...ms.map((m) => (m.activa ? { ...m, activa: false } : m)), { id: ++idMensaje, rol: 'usuario', texto }]);
       setEscribiendo(true);
       try {
         procesar(await api.mensaje(texto), 'chat');
@@ -157,6 +212,7 @@ export default function App() {
   const confirmar = (aceptar: boolean) =>
     unaVez(async () => {
       setMensajes((ms) => ms.map((m) => (m.activa ? { ...m, activa: false } : m)));
+      borrarPendiente();
       setEscribiendo(true);
       try {
         const r = await api.confirmar(aceptar);
@@ -169,16 +225,30 @@ export default function App() {
 
   // --- Calendario (la API aplica de una vez: el calendario ya pidió confirmación) ---
   const mover = (b: Bloque, dia: string, horaInicio: string | null) =>
-    unaVez(async () => procesar(await api.mover({ actividad: b.actividad, dia_origen: b.dia, dia_destino: dia, hora_inicio: horaInicio, hora_origen: hm(b.inicio) }), 'calendario'));
+    unaVez(async () =>
+      procesar(await api.mover({ actividad: b.actividad, dia_origen: b.dia, dia_destino: dia, hora_inicio: horaInicio, hora_origen: hm(b.inicio) }), 'calendario'),
+    );
 
   const intercambiar = (a: Bloque, b: Bloque) =>
     unaVez(async () => procesar(await api.intercambiar({ dia: a.dia, hora: hm(a.inicio) }, { dia: b.dia, hora: hm(b.inicio) }), 'calendario'));
 
+  /** La API marca una sesión a la vez y solo si ya empezó: un bloque puede tener varias, se marcan en orden. */
   const noHecha = (b: Bloque) =>
-    unaVez(async () => procesar(await api.noHecha({ actividad: b.actividad, dia: b.dia, inicio: b.inicio, fin: b.fin }), 'calendario'));
+    unaVez(async () => {
+      const sesiones = (estado?.horario?.sesiones ?? []).filter(
+        (s) => s.actividad === b.actividad && s.dia === b.dia && toMin(s.inicio) >= toMin(b.inicio) && toMin(s.fin) <= toMin(b.fin) && yaEmpezo(s, hoy, ahoraMin()),
+      );
+      if (!sesiones.length) return toast('Solo puedes marcar como no hecha una sesión que ya empezó.', 'warn');
+      for (const s of sesiones) {
+        const r = await api.noHecha(s);
+        procesar(r, 'calendario');
+        if (r.tipo !== 'aplicada') break;
+      }
+    });
 
   return (
     <>
+      <div className={`progreso ${trabajando ? 'on' : ''}`} aria-hidden="true" />
       <header>
         <div className="contenedor nav">
           <div className="logo">
@@ -230,7 +300,7 @@ export default function App() {
       </main>
 
       <Chat
-        abierto={chatAbierto && hayPlan}
+        abierto={chatAbierto && hayAsistente}
         mensajes={mensajes}
         escribiendo={escribiendo}
         decision={estado?.decision ?? null}
@@ -240,7 +310,7 @@ export default function App() {
         onOpcion={(o) => enviar(TEXTO_OPCION[o])}
       />
       <BotonAsistente
-        visible={hayPlan}
+        visible={hayAsistente}
         pendiente={pendiente}
         mostrarBurbuja={burbuja && !chatAbierto}
         onAbrir={() => {

@@ -124,6 +124,28 @@ export function aPlanEntrada(f: Formulario): PlanEntrada {
   };
 }
 
+/** Rellena el formulario con el plan guardado en la API (al recargar la página). Los días que ya pasaron se descartan. */
+export function planAFormulario(plan: PlanEntrada, hoy: string): Formulario {
+  const dias = plan.disponibilidad.filter((d) => d.dia >= hoy && d.franjas.length);
+  const disp: Record<string, FranjaForm[]> = {};
+  dias.forEach((d) => (disp[d.dia] = d.franjas.map((f) => [f.inicio.slice(0, 5), f.fin.slice(0, 5)] as FranjaForm)));
+  const ordenados = Object.keys(disp).sort();
+  return {
+    ini: ordenados[0] ?? hoy,
+    fin: ordenados[ordenados.length - 1] ?? '',
+    disp,
+    actividades: plan.actividades.map((a) => ({
+      nombre: a.nombre,
+      prioridad: a.prioridad,
+      dificultad: a.dificultad,
+      fecha: a.fecha_limite,
+      horas: String(a.horas_estimadas),
+    })),
+    maxDia: plan.max_horas_dia == null ? '' : String(plan.max_horas_dia),
+    duracion: plan.duracion_sesion,
+  };
+}
+
 // --- Ejemplo para rellenar el formulario ---------------------------------------------------------
 /** Franjas por día de la semana (0 = lunes). */
 const PLANTILLA: FranjaForm[][] = [

@@ -4,8 +4,8 @@
 
 import type { Bloque, ClienteApi, DecisionVista, Estado, Lugar, MoverCuerpo, PlanEntrada, Respuesta, ResumenActividad, Sesion, TipoRespuesta } from './tipos';
 import { ErrorApi } from './tipos';
-import { DIASL, ahoraMin, etiqueta, etiquetaL, fecha, hm, hoyISO, sumaDias, toMin, toStr } from '../utils/fechas';
-import { type Contexto, agrupar, claveBloque, duracion, razonDia, razonIntercambio, razonNoCabe } from '../utils/horario';
+import { DIASL, ahoraMin, etiqueta, etiquetaL, fecha, fmtH, hm, hoyISO, sumaDias, toMin, toStr } from '../utils/fechas';
+import { type Contexto, agrupar, duracion, razonDia, razonIntercambio, razonNoCabe, yaEmpezo } from '../utils/horario';
 
 const AVISO_REEMPLAZO = 'Ya tienes un plan. Si creas uno nuevo, el anterior y sus cambios se eliminarán. ¿Quieres continuar?';
 const SIN_PENDIENTE = 'No tengo ningún cambio esperando tu confirmación (o pasaron más de 30 minutos). Pídemelo de nuevo.';
@@ -161,11 +161,6 @@ const sesionesDe = (dia: string) =>
 
 // --- Cliente ---------------------------------------------------------------------------------------
 export const apiSimulada: ClienteApi = {
-  async crearEstudiante() {
-    await espera(200);
-    return `simulado-${Math.random().toString(16).slice(2, 10)}`;
-  },
-
   async estado() {
     await espera(150);
     return estado();
@@ -334,24 +329,29 @@ export const apiSimulada: ClienteApi = {
   async noHecha(s: Sesion) {
     limitar();
     await espera(500);
-    const b = bloques.find((x) => claveBloque(x) === claveBloque(s));
-    if (!b) return resp('rechazada', 'No encontré esa sesión en tu horario.');
-    const d = duracion(b);
-    bloques = bloques.filter((x) => x !== b);
+    // Igual que la API: solo una sesión del horario que ya empezó.
+    const b = bloques.find((x) => x.actividad === s.actividad && x.dia === s.dia && toMin(s.inicio) >= toMin(x.inicio) && toMin(s.fin) <= toMin(x.fin));
+    if (!b || !yaEmpezo(s, hoyISO(), ahoraMin())) return resp('rechazada', 'Solo puedes marcar como no hecha una sesión de tu horario que ya pasó.');
+    const d = toMin(s.fin) - toMin(s.inicio);
+    const resto0 = [
+      { ...b, fin: s.inicio },
+      { ...b, inicio: s.fin },
+    ].filter((x) => toMin(x.fin) > toMin(x.inicio));
+    const previos = bloques;
+    bloques = [...bloques.filter((x) => x !== b), ...resto0];
     const c = ctx(plan!, bloques.map((x) => ({ ...x })));
     const limite = plan!.actividades.find((a) => a.nombre === b.actividad)!.fecha_limite;
     const dias = plan!.disponibilidad.map((x) => x.dia).filter((x) => x >= c.hoy && x < limite);
     const resto = repartir(c, b.actividad, d, dias, plan!.duracion_sesion);
     if (resto > 0) {
       crearDecision({ plan: plan!, bloques: agrupar(c.bloques), faltan: [{ actividad: b.actividad, min: resto }] }, false);
-      bloques.push(b);
-      bloques = agrupar(bloques);
+      bloques = previos;
       return resp('decision', textoDecision());
     }
     bloques = agrupar(c.bloques);
     const nueva = c.bloques[c.bloques.length - 1];
-    return resp('aplicada', `Listo, repuse la sesión de "${b.actividad}".`, [
-      `"${b.actividad}": la sesión no hecha pasó al ${etiquetaL(nueva.dia)} a las ${hm(nueva.inicio)}.`,
+    return resp('aplicada', 'Listo, tu horario quedó actualizado.', [
+      `Las ${fmtH(d)} de ${b.actividad} volvieron a lo pendiente y pasaron al ${etiquetaL(nueva.dia)} a las ${hm(nueva.inicio)}.`,
     ]);
   },
 };

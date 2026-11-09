@@ -110,9 +110,9 @@ export interface Lugar {
   hora: string;
 }
 
-/** Contrato que cumple tanto el cliente simulado como el real. */
+/** Contrato que cumplen el cliente real (real.ts) y el simulado (simulada.ts). El identificador del estudiante lo maneja cada cliente. */
 export interface ClienteApi {
-  crearEstudiante(): Promise<string>;
+  /** Estado guardado del estudiante (vacío si aún no tiene identificador). */
   estado(): Promise<Estado>;
   crearPlan(plan: PlanEntrada, reemplazar: boolean): Promise<Respuesta>;
   mensaje(texto: string): Promise<Respuesta>;

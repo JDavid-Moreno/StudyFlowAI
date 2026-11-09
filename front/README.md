@@ -2,7 +2,7 @@
 
 Interfaz web de StudyFlow AI hecha con React, TypeScript y Vite. Es la versión final del diseño (`docs/prototipo/studyflow_prototipo_v2.html`).
 
-**Estado actual: solo diseño.** Todavía no llama a la API: usa un cliente simulado (`src/api/simulada.ts`) que cumple el mismo contrato que tendrá el cliente real. Ese cliente arma un horario sencillo con lo que se ingresa en el formulario y responde al chat con unos casos fijos (bloquear un día, consultar un día, abrir tiempo o recortar en una decisión, fuera de alcance). En la fase de conexión se cambia una línea en `src/api/index.ts`.
+**Estado actual: conectado a la API.** Por defecto habla con FastAPI en `http://localhost:8000` (`src/api/real.ts`). Con `VITE_API_MODO=simulada` usa el cliente simulado (`src/api/simulada.ts`), útil para trabajar solo el diseño sin levantar el back.
 
 ## Requisitos
 
@@ -20,6 +20,23 @@ npm run preview    # sirve el build
 
 El puerto 5173 es el que la API acepta por defecto en `STUDYFLOW_CORS`.
 
+## Cómo correrlo con la API
+
+En una terminal, desde la raíz del repo (el primer arranque tarda por TensorFlow):
+
+```bash
+uv run uvicorn studyflow.api:app --reload
+```
+
+En otra, desde `front/`:
+
+```bash
+npm install
+npm run dev
+```
+
+Abre `http://localhost:5173`. Para cambiar la dirección de la API o usar el modo simulado, copia `.env.example` como `.env.local`.
+
 ## Estructura
 
 ```
@@ -33,8 +50,9 @@ front/
     ├── assets/logo.png           # logo del proyecto
     ├── api/
     │   ├── tipos.ts              # tipos que reflejan los modelos de la API y el contrato ClienteApi
+    │   ├── real.ts               # cliente real: fetch, X-Estudiante-Id y errores 404, 422 y 429
     │   ├── simulada.ts           # cliente simulado (solo diseño)
-    │   └── index.ts              # cliente en uso
+    │   └── index.ts              # elige el cliente según VITE_API_MODO
     ├── components/
     │   ├── PasoDisponibilidad.tsx  # paso 1: rango de fechas, días y franjas
     │   ├── PasoActividades.tsx     # paso 2: actividades y botón de generar
@@ -43,7 +61,8 @@ front/
     │   └── Avisos.tsx              # avisos flotantes y ventana de confirmación
     └── utils/
         ├── fechas.ts             # fechas y horas
-        ├── formulario.ts         # validación del formulario y conversión a PlanEntrada
+        ├── formulario.ts         # validación del formulario y conversión desde y hacia PlanEntrada
+        ├── pendiente.ts          # confirmación pendiente guardada en el navegador
         └── horario.ts            # huecos libres y reglas del calendario (la API valida de nuevo)
 ```
 
@@ -53,19 +72,20 @@ No se usan carpetas llamadas `lib`, `build` ni `dist` dentro de `src`, porque el
 
 | Acción en la interfaz | Ruta |
 |---|---|
-| Generar mi horario | `POST /plan` (si responde `confirmar_reemplazo`, se pide confirmación y se reenvía con `reemplazar: true`) |
-| Mensaje en el chat | `POST /mensaje` |
+| Al abrir la página (si hay identificador guardado) | `GET /estado` |
+| Generar mi horario | `POST /estudiantes` (solo la primera vez) y `POST /plan`; si responde `confirmar_reemplazo` se pide confirmación y se reenvía con `reemplazar: true` |
+| Mensaje en el chat u opción de una decisión | `POST /mensaje` |
 | Aplicar cambios o Descartar | `POST /confirmacion` |
 | Arrastrar a otro día o mover desde el menú | `POST /sesiones/mover` (con `hora_origen`; sin `hora_inicio` al arrastrar) |
 | Soltar una sesión encima de otra | `POST /sesiones/intercambiar` |
-| Botón "✕ No" o "No la hice" | `POST /sesiones/no-hecha` |
-| Opciones de una decisión | `POST /mensaje` con el texto de la opción |
+| Botón "✕ No" o "No la hice" | `POST /sesiones/no-hecha`, una llamada por cada sesión del bloque que ya empezó |
 
-Los errores 404, 422 y 429 ya tienen su manejo en `App.tsx`.
+## Cosas que la API define y la interfaz respeta
 
-## Pendiente para la fase de conexión
-
-- Cliente real (`src/api/real.ts`) con `fetch`, el encabezado `X-Estudiante-Id` y los errores como `ErrorApi`.
-- Crear y guardar el identificador en el navegador (`POST /estudiantes`) y cargar `GET /estado` al abrir la página.
-- Guardar en el navegador el texto de la confirmación pendiente, porque `/estado` no la expone.
-- Leer la URL de la API desde una variable de entorno de Vite (`VITE_API_URL`).
+- **Identificador:** se crea la primera vez que se genera un plan y se guarda en `localStorage`. Un 404 lo borra y muestra un aviso.
+- **Horas:** la API devuelve `HH:MM:SS`; `real.ts` las recorta a `HH:MM` al recibirlas.
+- **No la hice:** la API solo lo acepta para sesiones que ya empezaron, así que el botón solo aparece en esas.
+- **Primer plan que no cabe:** `/estado` no trae plan, solo la decisión. El asistente se abre con las opciones y el horario aparece al resolverla.
+- **Confirmación pendiente:** `/estado` no la expone; el texto se guarda en el navegador por 30 minutos y se recupera al recargar.
+- **`texto_horario`:** el horario narrado por el redactor se muestra en el chat al consultar, crear el plan o aplicar un cambio del chat. Se apaga con `MOSTRAR_TEXTO_HORARIO` en `App.tsx`.
+- **Límites:** 10 cambios por minuto y por estudiante (429) y 20 identificadores nuevos por IP y hora.

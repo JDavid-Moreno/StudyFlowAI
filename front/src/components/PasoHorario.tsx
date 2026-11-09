@@ -3,7 +3,7 @@ import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Bloque, Estado } from '../api/tipos';
 import { DIAS, MESESL, ahoraMin, diaCorto, etiqueta, etiquetaL, fecha, fmtH, hm, sumaDias, toMin, toStr } from '../utils/fechas';
 import {
-  COLORES, type Contexto, claveBloque, duracion, indiceColor, opcionesDia, opcionesHora, razonDia, razonIntercambio, semanasPlan,
+  COLORES, type Contexto, claveBloque, duracion, indiceColor, opcionesDia, opcionesHora, razonDia, razonIntercambio, semanasPlan, yaEmpezo,
 } from '../utils/horario';
 import type { DatosModal } from './Avisos';
 
@@ -96,7 +96,7 @@ export function PasoHorario(p: Props) {
   const pedirNoHecha = (b: Bloque) =>
     p.confirmar({
       titulo: '¿No hiciste esta sesión?',
-      contenido: <p>{b.actividad} · {etiquetaL(b.dia)} de {b.inicio} a {b.fin}. Intentaré reponerla en otro hueco antes de la entrega.</p>,
+      contenido: <p>{b.actividad} · {etiquetaL(b.dia)} de {b.inicio} a {b.fin}. Intentaré reponer esas horas en otro hueco antes de la entrega.</p>,
       ok: 'Sí, reponerla',
       onOk: () => p.onNoHecha(b),
     });
@@ -255,7 +255,7 @@ export function PasoHorario(p: Props) {
                         <span>{hm(b.inicio)}–{hm(b.fin)}</span>
                         <div className="marcar">
                           <i data-op="mas" title="Más opciones: mover a otra hora, intercambiar">⋯</i>
-                          <i data-op="no" title="No la hice">✕ No</i>
+                          {yaEmpezo(b, hoy, ctx.ahora) && <i data-op="no" title="No la hice">✕ No</i>}
                         </div>
                       </div>
                     );
@@ -340,7 +340,7 @@ function MenuSesion({ ctx, b, x, y, cerrar, onMover, onIntercambiar, onNoHecha }
               <p style={{ padding: '4px 2px' }}>No hay ningún hueco libre antes de la entrega.</p>
             ))}
           <button onClick={onIntercambiar}>Intercambiar con otra sesión</button>
-          <button onClick={onNoHecha}>No la hice</button>
+          {yaEmpezo(b, ctx.hoy, ctx.ahora) && <button onClick={onNoHecha}>No la hice</button>}
         </div>
       </div>
     </>

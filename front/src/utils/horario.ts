@@ -9,6 +9,10 @@ export interface Contexto {
   ahora: number;
 }
 
+/** La API solo deja marcar como no hecha una sesión que ya empezó. */
+export const yaEmpezo = (s: { dia: string; inicio: string }, hoy: string, ahora: number) =>
+  s.dia < hoy || (s.dia === hoy && toMin(s.inicio) < ahora);
+
 export const claveBloque = (b: Sesion) => `${b.actividad}|${b.dia}|${hm(b.inicio)}`;
 export const duracion = (b: Sesion) => toMin(b.fin) - toMin(b.inicio);
 export const fechaLimite = (plan: PlanEntrada, actividad: string) =>

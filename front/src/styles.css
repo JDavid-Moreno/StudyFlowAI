@@ -263,3 +263,9 @@ footer{padding:40px 0 80px;text-align:center;font-size:13px;color:var(--texto-su
 /* Propias del front en React */
 .btn-gen-cargando{min-width:210px}
 .pop-velo{position:fixed;inset:0;z-index:59}
+
+/* Barra de progreso mientras la API aplica un cambio */
+.progreso{position:fixed;top:0;left:0;right:0;height:3px;z-index:90;background:linear-gradient(90deg,var(--azul),var(--coral),var(--azul));background-size:200% 100%;opacity:0;pointer-events:none;transition:opacity .15s}
+.progreso.on{opacity:1;animation:corre 1s linear infinite}
+@keyframes corre{to{background-position:-200% 0}}
+body:has(.progreso.on) .sesion{cursor:progress}
