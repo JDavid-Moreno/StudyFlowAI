@@ -459,6 +459,10 @@ def _mover(base: PlanVigente, o: Orden, ahora: datetime, mlp: Predictor, opcione
     de = f" de {o.actividad}" if o.actividad else ""
     if not movidas:
         return _rechazo(f"No tienes sesiones{de} pendientes el {fecha_texto(o.dia_origen)}.")
+    if destino < ahora.date():
+        return _rechazo(f"El {fecha_texto(destino)} ya pasó. Elige un día de hoy en adelante.")
+    if destino == o.dia_origen and o.hora_inicio is None:
+        return _rechazo("El día de origen y el de destino son el mismo; dime a qué hora o a qué otro día moverlo.")
     limite = min(_actividad(plan, s.actividad).fecha_limite for s in movidas)
     if destino >= limite:
         return _rechazo(f"El {fecha_texto(destino)} ya no sirve: la entrega es el {fecha_texto(limite)}. Elige un día anterior.")

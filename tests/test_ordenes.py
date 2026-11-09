@@ -365,6 +365,21 @@ def test_mover_sesion_que_no_cabe(mlp):
     assert vacio.tipo == "rechazada" and "No tienes sesiones" in vacio.mensaje
 
 
+def test_mover_a_un_dia_pasado_o_al_mismo_dia_sin_hora(mlp):
+    """Un destino que ya pasó, o el mismo día sin hora, se rechaza sin cambiar nada (así puede llegar una orden desde el calendario)."""
+    v = vigente_base(mlp)
+    origen = de(v, "Parcial de IA")[0]
+    ayer = aplicar(v, Orden(accion="mover_sesion", actividad="Parcial de IA", dia_origen=origen.dia,
+                            dia_destino=AHORA.date() - timedelta(days=1)), AHORA, mlp)
+    assert ayer.tipo == "rechazada" and "ya pasó" in ayer.mensaje
+    mismo = aplicar(v, Orden(accion="mover_sesion", actividad="Parcial de IA", dia_origen=origen.dia, dia_destino=origen.dia), AHORA, mlp)
+    assert mismo.tipo == "rechazada" and "el mismo" in mismo.mensaje
+    otra_hora = aplicar(v, Orden(accion="mover_sesion", actividad="Parcial de IA", dia_origen=origen.dia, dia_destino=origen.dia,
+                                 hora_inicio=time(19)), AHORA, mlp)
+    assert otra_hora.tipo == "aplicada" and otra_hora.vigente.fijadas[0].inicio == time(19)
+    revisar(otra_hora.vigente, AHORA)
+
+
 def test_la_fijada_sobrevive_a_otras_ordenes(mlp):
     """Una sesión movida sigue en su lugar después de otras órdenes que replanifican."""
     v = vigente_base(mlp)
