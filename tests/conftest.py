@@ -47,6 +47,16 @@ def plan(actividades, disponibilidad, sesion=60, max_horas_dia=None):
     return {"actividades": actividades, "disponibilidad": disponibilidad, "duracion_sesion": sesion, "max_horas_dia": max_horas_dia}
 
 
+def plan_captura(sesion=180):
+    """Plan de una prueba real: 34 h por ubicar en 34,5 h libres y huecos que empiezan a las 12:30, 13:30 y 15:30 (dejan medias horas)."""
+    disponibilidad = [{"dia": f(n), "franjas": franjas((i, fin))}
+                      for n, i, fin in [(0, "15:00", "21:00"), (1, "18:00", "21:00"), (2, "12:30", "21:00"), (3, "13:30", "21:00"),
+                                        (4, "18:00", "22:00"), (5, "15:30", "21:00")]]
+    actividades = [act("Proyecto ARSW", 6, 20, "alta", "alta"), act("Proyecto PRI2", 4, 5), act("lab FDSI", 6, 2),
+                   act("Quiz ARSW", 3, 3, "media", "baja"), act("Lab IAIA", 8, 4)]
+    return plan(actividades, disponibilidad, sesion)
+
+
 def pr(prioridad, perfil):
     return Prediccion(prioridad=prioridad, perfil=perfil)
 

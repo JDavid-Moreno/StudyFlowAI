@@ -180,19 +180,20 @@ def test_mover_un_solo_bloque_desde_el_calendario(con):
     """Con hora de origen se mueve el bloque entero que la incluye (las dos sesiones seguidas del parcial del lunes); en el calendario se une con lo que quede pegado."""
     e, s = con_plan(con)
     r = s.mover(e, "Parcial de IA", HOY, HOY + timedelta(days=5), time(19), hora_origen=time(19))
-    assert r.tipo == "aplicada" and [(x.inicio, x.fin) for x in r.estado.fijadas] == [(time(19), time(20)), (time(20), time(20, 30))]
+    assert r.tipo == "aplicada" and [(x.inicio, x.fin) for x in r.estado.fijadas] == [(time(19), time(20)), (time(20), time(21))]
     sabado = [b for b in r.estado.bloques if b.dia == HOY + timedelta(days=5)]
-    assert [(b.actividad, b.inicio, b.fin, b.fijado) for b in sabado] == [("Parcial de IA", time(18), time(20, 30), True)]
+    assert [(b.actividad, b.inicio, b.fin, b.fijado) for b in sabado] == [("Parcial de IA", time(18), time(21), True)]
 
 
 def test_intercambiar_desde_el_calendario(con):
     """El parcial del jueves y el taller del lunes cambian de lugar; si el taller pasara su fecha límite, se rechaza."""
     e, s = con_plan(con)
     jueves = HOY + timedelta(days=3)
-    r = s.intercambiar(e, jueves, time(18), HOY, time(19, 30))
+    r = s.intercambiar(e, jueves, time(18), HOY, time(20))
     assert r.tipo == "aplicada" and len(r.estado.fijadas) == 2
-    assert any(b.actividad == "Taller" and b.dia == jueves and (b.inicio, b.fin) == (time(18), time(19, 30)) for b in r.estado.bloques)   # se une con el taller que ya estaba
-    tarde = s.intercambiar(e, jueves, time(19), HOY + timedelta(days=5), time(18))
+    assert any(b.actividad == "Taller" and b.dia == jueves and (b.inicio, b.fin) == (time(18), time(19)) for b in r.estado.bloques)
+    assert any(b.actividad == "Parcial de IA" and b.dia == HOY and (b.inicio, b.fin) == (time(18), time(21)) for b in r.estado.bloques)   # se une con el parcial que ya estaba
+    tarde = s.intercambiar(e, jueves, time(18), HOY + timedelta(days=5), time(18))
     assert tarde.tipo == "rechazada" and "vence" in tarde.mensaje
 
 
