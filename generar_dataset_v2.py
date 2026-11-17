@@ -56,7 +56,8 @@ def escalar(x, lo, hi):
 
 def generar_escenario():
     n = rng.integers(MIN_ACT, MAX_ACT + 1)
-    # Disponibilidad por día, en pasos de 0.5 h
+    # Capacidad efectiva por día: ya está en bloques de 30 min, igual que capacidad_dia() del validador
+    # (la suma de 'disp' hasta el día d equivale a capacidad_entre() con el día de entrega excluido)
     disp = rng.integers(int(DISP_MIN * 2), int(DISP_MAX * 2) + 1, size=DIAS_MAX) / 2.0
     disp_acum = np.cumsum(disp)  # horas disponibles hasta el día d (índice d-1)
     dias = rng.integers(DIAS_MIN, DIAS_MAX + 1, size=n)
